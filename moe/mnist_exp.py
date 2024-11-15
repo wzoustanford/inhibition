@@ -9,32 +9,52 @@ from torch.optim.lr_scheduler import StepLR
 
 # -- replicate the MoE wrapper -- 
 class RouterWithGLU(nn.Module): 
-    def __init__(self, input_dim, hidden_dim, num_experts): 
+    def __init__(
+            self, 
+            input_dim: int, 
+            hidden_dim: int, 
+            num_experts: int, 
+            glu_on: bool,
+        ): 
         super(RouterWithGLU, self).__init__() 
-        self.h_layer_1 = nn.Linear(input_dim, hidden_dim) 
-        self.h_layer_1_glu = nn.Linear(input_dim, hidden_dim) 
+        self.h_layer_1 = nn.Linear(input_dim, hidden_dim)         
         self.h_act = nn.ReLU 
-        self.h_glu_act = nn.ReLU 
+        self.glu_on = glu_on
+        if glu_on: 
+            self.h_layer_1_glu = nn.Linear(input_dim, hidden_dim) 
+            self.h_glu_act = nn.ReLU 
         self.h_layer_2 = nn.Linear(hidden_dim, num_experts) 
         self.router_act = nn.Softmax(dim=0) ## expert choice 
 
     def forward(self, input: nn.Tensor): 
         h_1 = self.h_layer_1(input) 
-        glu_mask = self.h_glu_act(self.h_layer_1_glu(input)) 
-        h_1 = torch.mul(h_1, glu_mask) 
+        if self.glu_on: 
+            glu_mask = self.h_glu_act(self.h_layer_1_glu(input)) 
+            h_1 = torch.mul(h_1, glu_mask) 
         h_1 = self.h_act(h_1) 
         return self.router_act(self.h_layer_2(h_1))
 
 class MoEWrapper(nn.Module): 
     ## Expert Choice/Selection 
-    def __init__(self, input_dim: int, output_dim: int, K: int, expert_list: List[nn.Module], output_type: str = 'concat_sum'): 
+    def __init__(
+            self, 
+            input_dim: int, 
+            output_dim: int, 
+            K: int, 
+            expert_list: List[nn.Module], 
+            glu_on: bool,
+            output_type: str = 'concat_sum'
+        ):
         super(MoEWrapper, self).__init__() 
-        self.expert_list = expert_list 
-        self.num_experts = len(expert_list) 
+        self.input_dim = input_dim
+        self.output_dim = output_dim
         self.K = K 
-        self.output_type = output_type
+        self.expert_list = expert_list 
+        self.glu_on = glu_on 
+        self.num_experts = len(expert_list) 
+        self.output_type = output_type 
         hidden_dim = 256 
-        self.router = RouterWithGLU(input_dim, hidden_dim, self.num_experts) 
+        self.router = RouterWithGLU(input_dim, hidden_dim, self.num_experts, glu_on=glu_on) 
     
     def forward(self, input:nn.Tensor):
         l = self.router(input)
@@ -48,14 +68,14 @@ class MoEWrapper(nn.Module):
                 temp_sum_output = torch.zeros((self.input_dim, self.output_dim)) 
         
         for e in range(self.num_experts): 
-            selected_data = torch.index_select(input, 0, ib[:, 0]) 
+            selected_data = torch.index_select(input, 0, ib[:, e]) 
             selected_output = self.expert_list[e](selected_data)
             if self.output_type == 'sum': 
-                output[ib[:, 0], :] += selected_output 
+                output[ib[:, e], :] += selected_output 
             else:
-                output_list[e][ib[:, 0], :] = selected_output 
+                output_list[e][ib[:, e], :] = selected_output 
                 if self.output_type == 'concat_sum':
-                    temp_sum_output[ib[:, 0], :] += selected_output 
+                    temp_sum_output[ib[:, e], :] += selected_output 
         
         if self.output_type != 'sum':
             if self.output_type == 'concat_sum': 
