@@ -7,6 +7,12 @@ from typing import List
 from torchvision import datasets, transforms
 from torch.optim.lr_scheduler import StepLR
 
+NUM_EXPERTS = 2 
+K_VALUE = 32 
+GLU_ON = False 
+
+gpu = torch.device('mps')
+
 # -- replicate the MoE wrapper -- 
 class RouterWithGLU(nn.Module): 
     def __init__(
@@ -17,16 +23,16 @@ class RouterWithGLU(nn.Module):
             glu_on: bool,
         ): 
         super(RouterWithGLU, self).__init__() 
-        self.h_layer_1 = nn.Linear(input_dim, hidden_dim)         
-        self.h_act = nn.ReLU 
+        self.h_layer_1 = nn.Linear(input_dim, hidden_dim, device=gpu)         
+        self.h_act = nn.ReLU() 
         self.glu_on = glu_on
         if glu_on: 
-            self.h_layer_1_glu = nn.Linear(input_dim, hidden_dim) 
-            self.h_glu_act = nn.ReLU 
-        self.h_layer_2 = nn.Linear(hidden_dim, num_experts) 
+            self.h_layer_1_glu = nn.Linear(input_dim, hidden_dim, device=gpu) 
+            self.h_glu_act = nn.ReLU() 
+        self.h_layer_2 = nn.Linear(hidden_dim, num_experts, device=gpu) 
         self.router_act = nn.Softmax(dim=0) ## expert choice 
 
-    def forward(self, input: nn.Tensor): 
+    def forward(self, input: torch.Tensor): 
         h_1 = self.h_layer_1(input) 
         if self.glu_on: 
             glu_mask = self.h_glu_act(self.h_layer_1_glu(input)) 
@@ -53,19 +59,19 @@ class MoEWrapper(nn.Module):
         self.glu_on = glu_on 
         self.num_experts = len(expert_list) 
         self.output_type = output_type 
-        hidden_dim = 256 
-        self.router = RouterWithGLU(input_dim, hidden_dim, self.num_experts, glu_on=glu_on) 
+        router_hidden_dim = 256 
+        self.router = RouterWithGLU(input_dim, router_hidden_dim, self.num_experts, glu_on=glu_on) 
     
-    def forward(self, input:nn.Tensor):
+    def forward(self, input: torch.Tensor):
         l = self.router(input)
         _, ib = torch.topk(l, self.K, dim=0)
         if self.output_type == 'sum': 
-            output = torch.zeros((self.input_dim, self.output_dim)) 
+            output = torch.zeros((input.size()[0], self.output_dim), device=gpu) 
         else:
-            output_list  = [torch.zeros(self.input_dim, self.output_dim) for i in range(self.num_experts)]
-            output = torch.zeros((self.input_dim, self.output_dim * self.num_experts)) 
+            output_list  = [torch.zeros(input.size()[0], self.output_dim, device=gpu) for i in range(self.num_experts)]
+            output = torch.zeros((input.size()[0], self.output_dim * self.num_experts), device=gpu) 
             if self.output_type == 'concat_sum':
-                temp_sum_output = torch.zeros((self.input_dim, self.output_dim)) 
+                temp_sum_output = torch.zeros((input.size()[0], self.output_dim), device=gpu) 
         
         for e in range(self.num_experts): 
             selected_data = torch.index_select(input, 0, ib[:, e]) 
@@ -84,18 +90,35 @@ class MoEWrapper(nn.Module):
             output = torch.concat(output_list, dim=-1)
         
         return output
-        
-# -- make necessary changes in convnet code -- 
 
+# -- make necessary changes in convnet code -- 
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, 3, 1)
-        self.conv2 = nn.Conv2d(32, 64, 3, 1)
+        self.conv1 = nn.Conv2d(1, 32, 3, 1, device=gpu)
+        self.conv2 = nn.Conv2d(32, 64, 3, 1, device=gpu)
         self.dropout1 = nn.Dropout(0.25)
-        self.dropout2 = nn.Dropout(0.5)
-        self.fc1 = nn.Linear(9216, 128)
-        self.fc2 = nn.Linear(128, 10)
+        self.moe_module = nn.Sequential(
+            nn.Linear(9216, 128, device=gpu),
+            nn.ReLU(), 
+            nn.Linear(128, 10, device=gpu),
+        )
+        """
+        [nn.Sequential(
+                nn.Linear(9216, 128, device=gpu),
+                nn.ReLU(), 
+                nn.Linear(128, 10, device=gpu),
+            ) for i in range(NUM_EXPERTS)
+        ]
+        self.moe_module = MoEWrapper(
+            input_dim = 9216,
+            output_dim = 10,
+            K = K_VALUE,
+            expert_list = self.moe_module, 
+            glu_on = GLU_ON, 
+            output_type = 'sum', 
+        )
+        """
 
     def forward(self, x):
         x = self.conv1(x)
@@ -105,10 +128,7 @@ class Net(nn.Module):
         x = F.max_pool2d(x, 2)
         x = self.dropout1(x)
         x = torch.flatten(x, 1)
-        x = self.fc1(x)
-        x = F.relu(x)
-        x = self.dropout2(x)
-        x = self.fc2(x)
+        x = self.moe_module(x)
         output = F.log_softmax(x, dim=1)
         return output
 
