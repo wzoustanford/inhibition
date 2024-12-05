@@ -9,7 +9,7 @@ from typing import List
 from torchvision import datasets, transforms
 from torch.optim.lr_scheduler import StepLR
 
-USE_MOE = False
+USE_MOE = True
 NUM_EXPERTS = 1 
 K_VALUE = 1 
 GLU_ON = False
@@ -106,11 +106,11 @@ class MoEWrapper(nn.Module):
 class Net(nn.Module):
     def __init__(self, use_moe: bool):
         super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, 3, 1, device=gpu)
-        self.conv2 = nn.Conv2d(32, 64, 3, 1, device=gpu)
+        self.conv1 = nn.Conv2d(1, 2, 3, 1, device=gpu)
+        self.conv2 = nn.Conv2d(2, 2, 3, 1, device=gpu)
         self.dropout1 = nn.Dropout(0.25)
         self.dropout2 = nn.Dropout(0.5)
-        self.moe_input_dim = 9216
+        self.moe_input_dim = 288
         self.moe_output_dim = 128
         self.single_expert_instance = nn.Sequential(
             nn.Linear(self.moe_input_dim, self.moe_output_dim, device=gpu),
@@ -205,7 +205,7 @@ def main():
                         help='quickly check a single pass')
     parser.add_argument('--seed', type=int, default=1, metavar='S',
                         help='random seed (default: 1)')
-    parser.add_argument('--log-interval', type=int, default=10, metavar='N',
+    parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                         help='how many batches to wait before logging training status')
     parser.add_argument('--save-model', action='store_true', default=False,
                         help='For Saving the current Model')
