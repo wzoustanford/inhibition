@@ -33,8 +33,9 @@ print(selected)
 
 output = torch.zeros((batch_size, input_dim)) 
 # fill in the output 
-output[ib[:, 0], :] = selected 
+output[ib[:, 0], :] += selected 
 
 print('output')
 print(output)
+
 

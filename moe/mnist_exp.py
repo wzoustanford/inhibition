@@ -10,11 +10,12 @@ from torchvision import datasets, transforms
 from torch.optim.lr_scheduler import StepLR
 
 USE_MOE = True
-NUM_EXPERTS = 1 
+NUM_EXPERTS = 1
 K_VALUE = 1 
 GLU_ON = False
+OUTPUT_TYPE = 'sum'
 
-gpu = torch.device('mps')
+gpu = torch.device('cpu')
 
 # -- replicate the MoE wrapper -- 
 class RouterWithGLU(nn.Module): 
@@ -26,12 +27,15 @@ class RouterWithGLU(nn.Module):
             glu_on: bool,
         ): 
         super(RouterWithGLU, self).__init__() 
+        self.glu_on = glu_on 
+
         self.h_layer_1 = nn.Linear(input_dim, hidden_dim, device=gpu) 
         self.h_act = nn.ReLU() 
-        self.glu_on = glu_on 
+        
         if glu_on: 
             self.h_layer_1_glu = nn.Linear(input_dim, hidden_dim, device=gpu) 
             self.h_glu_act = nn.ReLU() 
+        
         self.h_layer_2 = nn.Linear(hidden_dim, num_experts, device=gpu) 
         self.router_act = nn.Softmax(dim=0) ## expert choice 
 
@@ -40,6 +44,7 @@ class RouterWithGLU(nn.Module):
         if self.glu_on: 
             glu_mask = self.h_glu_act(self.h_layer_1_glu(input)) 
             h_1 = torch.mul(h_1, glu_mask) 
+        
         h_1 = self.h_act(h_1) 
         return self.router_act(self.h_layer_2(h_1))
 
@@ -69,10 +74,12 @@ class MoEWrapper(nn.Module):
     def forward(self, input: torch.Tensor):
         #if len(self.expert_list) == 1: 
         #    return self.expert_list[0](input)
-        l = self.router(input)
+
+        #l = self.router(input)
+        l = torch.rand((input.size()[0], self.num_experts), device=gpu)
         batch_K = math.ceil(self.K / self.num_experts * input.size()[0])
         ws, ib = torch.topk(l, batch_K, dim=0)
-        nws = self.renorm_sm(ws)
+        nws = self.renorm_sm(ws) 
 
         if self.output_type == 'sum': 
             output = torch.zeros((input.size()[0], self.output_dim), device=gpu) 
@@ -82,17 +89,19 @@ class MoEWrapper(nn.Module):
             if self.output_type == 'concat_sum':
                 temp_sum_output = torch.zeros((input.size()[0], self.output_dim), device=gpu) 
         
-        for e in range(self.num_experts): 
-            selected_data = torch.index_select(input, 0, ib[:, e]) 
-            selected_output = self.expert_list[e](selected_data) 
-            selected_output = torch.mul(selected_output, nws[:, e].reshape((selected_output.size()[0],1))) 
+        for expert in range(self.num_experts): 
+            #selected_data = torch.index_select(input, 0, ib[:, expert]) 
+            selected_data = input
+            selected_output = self.expert_list[expert](selected_data) 
+            #selected_output = torch.mul(selected_output, nws[:, expert].reshape((selected_output.size()[0],1))) 
 
             if self.output_type == 'sum': 
-                output[ib[:, e], :] += selected_output 
+                #output[ib[:, expert], :] += selected_output 
+                output += selected_output
             else:
-                output_list[e][ib[:, e], :] = selected_output 
+                output_list[expert][ib[:, expert], :] = selected_output 
                 if self.output_type == 'concat_sum':
-                    temp_sum_output[ib[:, e], :] += selected_output 
+                    temp_sum_output[ib[:, expert], :] += selected_output 
         
         if self.output_type != 'sum':
             if self.output_type == 'concat_sum': 
@@ -106,31 +115,50 @@ class MoEWrapper(nn.Module):
 class Net(nn.Module):
     def __init__(self, use_moe: bool):
         super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(1, 2, 3, 1, device=gpu)
-        self.conv2 = nn.Conv2d(2, 2, 3, 1, device=gpu)
-        self.dropout1 = nn.Dropout(0.25)
-        self.dropout2 = nn.Dropout(0.5)
+        #self.dropout2 = nn.Dropout(0.5)
+
         self.moe_input_dim = 288
         self.moe_output_dim = 128
+
         self.single_expert_instance = nn.Sequential(
             nn.Linear(self.moe_input_dim, self.moe_output_dim, device=gpu),
             nn.ReLU(), 
         )
+
+        self.conv1 = nn.Conv2d(1, 2, 3, 1, device=gpu)
+        self.conv2 = nn.Conv2d(2, 2, 3, 1, device=gpu)
+        self.dropout1 = nn.Dropout(0.25)
+
         if use_moe: 
-            self.moe_module = [
+            self.moe_module_list = [
+                #self.single_expert_instance
+                #self.single_expert_instance for i in range(NUM_EXPERTS)
                 copy.deepcopy(self.single_expert_instance) for i in range(NUM_EXPERTS)
+                #nn.Sequential(
+                #    nn.Linear(self.moe_input_dim, self.moe_output_dim, device=gpu),
+                #    nn.ReLU(), 
+                #) #for i in range(NUM_EXPERTS)
             ]
             self.moe_module = MoEWrapper(
                 input_dim = self.moe_input_dim,
                 output_dim = self.moe_output_dim,
                 K = K_VALUE,
-                expert_list = self.moe_module, 
+                expert_list = self.moe_module_list, 
                 glu_on = GLU_ON, 
-                output_type = 'concat_sum', 
+                output_type = OUTPUT_TYPE, 
             )
-            self.sm_linear = nn.Linear(self.moe_output_dim * NUM_EXPERTS, 10, device=gpu)
+            if OUTPUT_TYPE != 'sum': 
+                self.sm_linear = nn.Linear(self.moe_output_dim * NUM_EXPERTS, 10, device=gpu)
+            else: 
+                self.sm_linear = nn.Linear(self.moe_output_dim, 10, device=gpu)
+
         else: 
-            self.moe_module = self.single_expert_instance
+            self.moe_module = nn.Sequential(
+                    nn.Linear(self.moe_input_dim, self.moe_output_dim, device=gpu),
+                    nn.ReLU(), 
+                ) #for i in range(NUM_EXPERTS)
+
+            #self.single_expert_instance
             self.sm_linear = nn.Linear(self.moe_output_dim, 10, device=gpu)
 
     def forward(self, x):
@@ -142,7 +170,7 @@ class Net(nn.Module):
         x = self.dropout1(x)
         x = torch.flatten(x, 1)
         x = self.moe_module(x)
-        x = self.dropout2(x)
+        #x = self.dropout2(x)
         x = self.sm_linear(x)
         output = F.log_softmax(x, dim=1)
         return output
@@ -203,7 +231,7 @@ def main():
                         help='disables macOS GPU training')
     parser.add_argument('--dry-run', action='store_true', default=False,
                         help='quickly check a single pass')
-    parser.add_argument('--seed', type=int, default=1, metavar='S',
+    parser.add_argument('--seed', type=int, default=5, metavar='S',
                         help='random seed (default: 1)')
     parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                         help='how many batches to wait before logging training status')
@@ -215,12 +243,13 @@ def main():
 
     torch.manual_seed(args.seed)
 
-    if use_cuda:
-        device = torch.device("cuda")
-    elif use_mps:
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
+    #if use_cuda:
+    #    device = torch.device("cuda")
+    #elif use_mps:
+    #    device = torch.device("mps")
+    #else:
+    #    device = torch.device("cpu")
+    device = gpu
 
     train_kwargs = {'batch_size': args.batch_size}
     test_kwargs = {'batch_size': args.test_batch_size}
