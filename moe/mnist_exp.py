@@ -10,14 +10,28 @@ from torchvision import datasets, transforms
 from torch.optim.lr_scheduler import StepLR
 
 USE_MOE = True
-NUM_EXPERTS = 1
-K_VALUE = 1 
+NUM_EXPERTS = 2
+K_VALUE = 2 
 GLU_ON = False
 OUTPUT_TYPE = 'sum'
 
 gpu = torch.device('cpu')
 
 # -- replicate the MoE wrapper -- 
+class SimpleSMRouter(nn.Module): 
+    def __init__(
+            self, 
+            input_dim: int, 
+            num_experts: int, 
+        ): 
+        super(SimpleSMRouter, self).__init__() 
+
+        self.h_layer = nn.Linear(input_dim, num_experts, device=gpu) 
+        self.router_act = nn.Softmax(dim=0) ## expert choice 
+
+    def forward(self, input: torch.Tensor): 
+        return self.router_act(self.h_layer(input))
+
 class RouterWithGLU(nn.Module): 
     def __init__(
             self, 
@@ -30,22 +44,21 @@ class RouterWithGLU(nn.Module):
         self.glu_on = glu_on 
 
         self.h_layer_1 = nn.Linear(input_dim, hidden_dim, device=gpu) 
-        self.h_act = nn.ReLU() 
+        self.h_act = F.relu
         
         if glu_on: 
             self.h_layer_1_glu = nn.Linear(input_dim, hidden_dim, device=gpu) 
-            self.h_glu_act = nn.ReLU() 
+            self.h_glu_act = F.relu
         
         self.h_layer_2 = nn.Linear(hidden_dim, num_experts, device=gpu) 
         self.router_act = nn.Softmax(dim=0) ## expert choice 
 
     def forward(self, input: torch.Tensor): 
-        h_1 = self.h_layer_1(input) 
+        h_1 = self.h_act(self.h_layer_1(input)) 
         if self.glu_on: 
             glu_mask = self.h_glu_act(self.h_layer_1_glu(input)) 
             h_1 = torch.mul(h_1, glu_mask) 
-        
-        h_1 = self.h_act(h_1) 
+
         return self.router_act(self.h_layer_2(h_1))
 
 class MoEWrapper(nn.Module): 
@@ -67,19 +80,28 @@ class MoEWrapper(nn.Module):
         self.glu_on = glu_on 
         self.num_experts = len(expert_list) 
         self.output_type = output_type 
-        router_hidden_dim = 128 
+        router_hidden_dim = 10 
         self.router = RouterWithGLU(input_dim, router_hidden_dim, self.num_experts, glu_on=glu_on) 
-        self.renorm_sm = nn.Softmax(dim=0)
+        #self.router = SimpleSMRouter(input_dim, self.num_experts) 
+        self.renorm_sm = nn.Softmax(dim=0) 
+        #self.rand_l = torch.rand((64, self.num_experts), device=gpu)
     
     def forward(self, input: torch.Tensor):
         #if len(self.expert_list) == 1: 
         #    return self.expert_list[0](input)
 
-        #l = self.router(input)
-        l = torch.rand((input.size()[0], self.num_experts), device=gpu)
-        batch_K = math.ceil(self.K / self.num_experts * input.size()[0])
+        l = self.router(input)
+        #l = torch.rand((input.size()[0], self.num_experts), device=gpu)
+        batch_K = math.ceil(self.K * 1.0 / self.num_experts * input.size()[0])
         ws, ib = torch.topk(l, batch_K, dim=0)
-        nws = self.renorm_sm(ws) 
+        #print('ws')
+        #print(ws)
+        #nws = ws
+        #nws = self.renorm_sm(ws) 
+        #nws = ws 
+        nws = ws * 64.0
+        #print('nws')
+        #print(nws)
 
         if self.output_type == 'sum': 
             output = torch.zeros((input.size()[0], self.output_dim), device=gpu) 
@@ -90,14 +112,14 @@ class MoEWrapper(nn.Module):
                 temp_sum_output = torch.zeros((input.size()[0], self.output_dim), device=gpu) 
         
         for expert in range(self.num_experts): 
-            #selected_data = torch.index_select(input, 0, ib[:, expert]) 
-            selected_data = input
+            selected_data = torch.index_select(input, 0, ib[:, expert]) 
+            #selected_data = input
             selected_output = self.expert_list[expert](selected_data) 
-            #selected_output = torch.mul(selected_output, nws[:, expert].reshape((selected_output.size()[0],1))) 
+            selected_output = torch.mul(selected_output, nws[:, expert].reshape((nws.size()[0],1))) 
 
             if self.output_type == 'sum': 
-                #output[ib[:, expert], :] += selected_output 
-                output += selected_output
+                output[ib[:, expert], :] += selected_output 
+                #output += selected_output
             else:
                 output_list[expert][ib[:, expert], :] = selected_output 
                 if self.output_type == 'concat_sum':
@@ -107,7 +129,7 @@ class MoEWrapper(nn.Module):
             if self.output_type == 'concat_sum': 
                 for i in range(self.num_experts): 
                     output_list[i] += temp_sum_output
-            output = torch.concat(output_list, dim=-1)
+            output = torch.concat(output_list, dim=1)
         
         return output
 
@@ -117,17 +139,27 @@ class Net(nn.Module):
         super(Net, self).__init__()
         #self.dropout2 = nn.Dropout(0.5)
 
-        self.moe_input_dim = 288
-        self.moe_output_dim = 128
+        self.model_type = 'dnn'
 
-        self.single_expert_instance = nn.Sequential(
-            nn.Linear(self.moe_input_dim, self.moe_output_dim, device=gpu),
-            nn.ReLU(), 
-        )
-
-        self.conv1 = nn.Conv2d(1, 2, 3, 1, device=gpu)
-        self.conv2 = nn.Conv2d(2, 2, 3, 1, device=gpu)
-        self.dropout1 = nn.Dropout(0.25)
+        if self.model_type == 'dnn': 
+            self.moe_input_dim = 96 
+            self.moe_output_dim = 64 
+            ## attempt to use dnn arch 
+            self.dnn_linear1 = nn.Linear(784, self.moe_input_dim, device=gpu)
+            self.single_expert_instance = nn.Sequential(
+                nn.Linear(self.moe_input_dim, self.moe_output_dim, device=gpu)
+            )
+        else: 
+            self.moe_input_dim = 288
+            self.moe_output_dim = 128
+            ## attempt to simplify conv arch 
+            self.conv1 = nn.Conv2d(1, 2, 3, 1, device=gpu)
+            self.conv2 = nn.Conv2d(2, 2, 3, 1, device=gpu)
+            self.dropout1 = nn.Dropout(0.25)
+            self.single_expert_instance = nn.Sequential(
+                nn.Linear(self.moe_input_dim, self.moe_output_dim, device=gpu),
+                nn.ReLU(), 
+            )
 
         if use_moe: 
             self.moe_module_list = [
@@ -153,25 +185,28 @@ class Net(nn.Module):
                 self.sm_linear = nn.Linear(self.moe_output_dim, 10, device=gpu)
 
         else: 
-            self.moe_module = nn.Sequential(
-                    nn.Linear(self.moe_input_dim, self.moe_output_dim, device=gpu),
-                    nn.ReLU(), 
-                ) #for i in range(NUM_EXPERTS)
-
-            #self.single_expert_instance
+            self.moe_module = self.single_expert_instance
             self.sm_linear = nn.Linear(self.moe_output_dim, 10, device=gpu)
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = F.relu(x)
-        x = self.conv2(x)
-        x = F.relu(x)
-        x = F.max_pool2d(x, 2)
-        x = self.dropout1(x)
-        x = torch.flatten(x, 1)
-        x = self.moe_module(x)
-        #x = self.dropout2(x)
-        x = self.sm_linear(x)
+
+        if self.model_type == 'dnn': 
+            x = torch.flatten(x, 1)
+            x = F.relu(self.dnn_linear1(x))
+            x = self.moe_module(x)
+            x = self.sm_linear(x)
+        else: 
+            x = self.conv1(x)
+            x = F.relu(x)
+            x = self.conv2(x)
+            x = F.relu(x)
+            x = F.max_pool2d(x, 2)
+            x = self.dropout1(x)
+            x = torch.flatten(x, 1)
+            x = self.moe_module(x)
+            #x = self.dropout2(x)
+            x = self.sm_linear(x)
+        
         output = F.log_softmax(x, dim=1)
         return output
 
