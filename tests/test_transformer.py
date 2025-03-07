@@ -1,4 +1,4 @@
-from light_transformer import LightTransformer, WMTDataset
+from ..light_transformer import LightningTransformer, WMTDataset
 
 import torch
 import lightning.pytorch as pl
@@ -10,9 +10,9 @@ def main():
     pl.seed_everything(42)
 
     # get vocabulary size
-    train_dataset = WMTDataset(Path("../data/news.2024.en.train.txt"))
+    train_dataset = WMTDataset(Path("../data/news.2024.en.train.preprocessed.txt"))
     vocab_size = train_dataset.vocab_size
-    transformer = LightTransformer(vocab_size=vocab_size)
+    transformer = LightningTransformer(vocab_size=vocab_size)
 
     """
     The Trainer automatically calls the appropriate methods in your LightningModule. 
@@ -32,10 +32,10 @@ def main():
     """
 
     trainer = Trainer(
-        max_epochs=100,
+        max_epochs=10,
         accelerator="gpu",  # use 'gpu' if available; otherwise, use 'cpu'
         devices=1,          # number of GPUs, if available
-        log_every_n_steps=10,
+        log_every_n_steps=100,
         logger=CSVLogger("csv_logs", name="transformer") # save logs to csv file in ogs/transformer/ directory.
     )
     trainer.fit(transformer)
