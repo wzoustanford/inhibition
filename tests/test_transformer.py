@@ -10,9 +10,7 @@ def main():
     pl.seed_everything(42)
 
     # get vocabulary size
-    train_dataset = WMTDataset(Path("../data/news.2024.en.train.preprocessed.txt"))
-    vocab_size = train_dataset.vocab_size
-    transformer = LightningTransformer(vocab_size=vocab_size)
+    transformer = LightningTransformer(vocab_size=17546150, ninp=200, nhead=2, nhid=200, nlayers=3)
 
     """
     The Trainer automatically calls the appropriate methods in your LightningModule. 
