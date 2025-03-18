@@ -172,9 +172,9 @@ class WMTDataset(Dataset):
         __getitem__(index: int) -> tuple[Tensor, Tensor]:
             Returns a tuple containing the input and target tensors for the given index.
     """
-    def __init__(self, file_path: Path, block_size: int = 35) -> None:
+    def __init__(self, file_path: Path, vocab, dictionary, block_size: int = 35) -> None:
         # Assume the file is a plain text file containing English text
-        self.data, self.dictionary = tokenize(file_path)
+        self.data, self.dictionary = tokenize(file_path, vocab, dictionary)
         self.block_size = block_size
 
     @property
@@ -191,12 +191,13 @@ class WMTDataset(Dataset):
         target = self.data[start+1:end+1]
         return inputs, target
 
-
-
 class Dictionary:
+    """
+    A dictionary class for mapping words to indices.
+    """
     def __init__(self) -> None:
-        self.word2idx: dict[str, int] = {}
-        self.idx2word: list[str] = []
+        self.word2idx: dict[str, int] = {} # Mapping from words to indices
+        self.idx2word: list[str] = [] # A list of tokenized words in the order they were added
 
     def add_word(self, word: str) -> int:
         if word not in self.word2idx:
@@ -207,8 +208,23 @@ class Dictionary:
     def __len__(self) -> int:
         return len(self.idx2word)
 
+class Vocabulary:
+    """
+    A dictionary class for mapping words to count their occurrences.
+    """
+    def __init__(self):
+        self.word2count = {}
+    
+    def add_word(self, word):
+        if word not in self.word2count:
+            self.word2count[word] = 1
+        else:
+            self.word2count[word] += 1
+    def most_common(self, n):
+        return dict(sorted(self.word2count.items(), key=lambda x: x[1], reverse=True)[:n])
 
-def tokenize(path: Path) -> tuple[Tensor, Dictionary]:
+
+def tokenize(path: Path, vocab, dictionary):
     """
     Tokenizes the text file at the given path and returns a tuple containing the tokenized tensor and the dictionary.
 
@@ -223,34 +239,59 @@ def tokenize(path: Path) -> tuple[Tensor, Dictionary]:
     Raises:
         AssertionError: If the file at the given path does not exist.
     """
-    dictionary = Dictionary()
+    # dictionary = Dictionary()
 
-    assert os.path.exists(path)
-    # Add words to the dictionary
-    with open(path, encoding="utf8") as f:
-        for line in f:
-            words = line.split() + ["<eos>"]
-            for word in words:
-                dictionary.add_word(word)
+    # assert os.path.exists(path)
+    # # Add words to the dictionary
+    # with open(path, encoding="utf8") as f:
+    #     for line in f:
+    #         words = ["<S>"] + line.split(" ") + ["</S>"]
+    #         for word in words:
+    #             dictionary.add_word(word)
+
+    # # Save dictionary_count top 40000 to a file
+    # with open("dictionary_count.txt", "w") as f:
+    #     # Sort the dictionary by count
+    #     vocab_count.word2count = dict(sorted(vocab_count.word2count.items(), key=lambda item: item[1], reverse=True))
+
+    #     for i in range(30000):
+    #         f.write(f"{list(vocab_count.word2count.keys())[i]}: {list(vocab_count.word2count.values())[i]}\n")
 
     # Tokenize file content
+    
     with open(path, encoding="utf8") as f:
         idss: list[Tensor] = []
         for line in f:
-            words = line.split() + ["<eos>"]
+            words = ["<S>"] + line.split(" ") + ["</S>"]
+            # Replace words not in the vocab_count with <UNK>
+            words = [word if word in vocab else "<UNK>" for word in words]
             ids: list[int] = []
             for word in words:
-                ids.append(dictionary.word2idx[word])
-            idss.append(torch.tensor(ids).type(torch.int64))
+                ids.append(dictionary.word2idx[word]) # Get the index of the word
+            idss.append(torch.tensor(ids).type(torch.int64)) # Convert the list of indices to a tensor
 
     return torch.cat(idss), dictionary
 
 
 class LightningTransformer(LightningModule):
-    def __init__(self, vocab_size: int) -> None:
+    def __init__(self, vocab_size: int, ninp: int, nhead: int, nhid: int, nlayers: int) -> None:
         super().__init__()
-        self.model = Transformer(vocab_size=vocab_size)
+        self.vocab = Vocabulary()
+        self.dictionary = Dictionary()
+        self.build_vocab(Path("./data/news.2024.en.train.preprocessed.txt"))
+        self.validation_step_outputs = []
+        self.model = Transformer(vocab_size=vocab_size, ninp=ninp, nhead=nhead, nhid=nhid, nlayers=nlayers)
 
+
+    def build_vocab(self, path: Path) -> None:
+        with open(path, encoding="utf8") as f:
+            for line in f:
+                words = ["<S>"] + line.split(" ") + ["</S>"]
+                for word in words:
+                    self.vocab.add_word(word)
+                    self.dictionary.add_word(word)
+            self.dictionary.add_word("<UNK>")
+        
     def forward(self, inputs: Tensor, target: Tensor) -> Tensor:
         return self.model(inputs, target)
 
@@ -267,11 +308,12 @@ class LightningTransformer(LightningModule):
         output = self(inputs, target)
         loss = F.nll_loss(output, target.view(-1))
         # Log the raw validation loss
+        self.validation_step_outputs.append(loss)
         self.log("val_loss", loss, prog_bar=True)
         return loss
 
-    def validation_epoch_end(self, outputs: list[Tensor]) -> None:
-        avg_loss = torch.stack(outputs).mean()
+    def on_validation_epoch_end(self) -> None:
+        avg_loss = torch.stack(self.validation_step_outputs).mean()
         # Perplexity is the exponentiation of the average loss
         perplexity = torch.exp(avg_loss)
         self.log("val_perplexity", perplexity, prog_bar=True)
@@ -280,9 +322,9 @@ class LightningTransformer(LightningModule):
         return torch.optim.SGD(self.model.parameters(), lr=0.1)
 
     def train_dataloader(self) -> DataLoader:
-        train_dataset = WMTDataset(Path("./data/news.2024.en.train.txt"))
-        return DataLoader(train_dataset, batch_size=32, shuffle=True)
+        train_dataset = WMTDataset(Path("./data/news.2024.en.train.preprocessed.txt"), self.vocab.most_common(80000), self.dictionary)
+        return DataLoader(train_dataset, batch_size=1024, shuffle=True)
 
     def val_dataloader(self) -> DataLoader:
-        val_dataset = WMTDataset(Path("./data/news.2024.en.valid.txt"))
-        return DataLoader(val_dataset, batch_size=32)
+        val_dataset = WMTDataset(Path("./data/news.2024.en.valid.preprocessed.txt"), self.vocab.most_common(80000), self.dictionary)
+        return DataLoader(val_dataset, batch_size=1024)

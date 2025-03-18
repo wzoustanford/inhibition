@@ -4,8 +4,9 @@
 
 1. Data
 
-Large corpora of crawled news, collected since 2007.
-https://data.statmt.org/news-crawl/en/ news.2024.en.shuffled.deduped.gz data
+Large corpora of crawled news, collected since 2007. https://data.statmt.org/news-crawl/en/ 
+
+**news.2024.en.shuffled.deduped.gz** data
 
 Stored in local ```./data ``` folder
 
