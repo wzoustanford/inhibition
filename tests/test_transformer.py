@@ -6,14 +6,16 @@ from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import CSVLogger
 from pathlib import Path
 
+MOST_COMMON_WORDS = 50000
+
 def main():
     pl.seed_everything(42)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # get vocabulary size
-    transformer = LightningTransformer(vocab_size=17546150, ninp=200, nhead=2, nhid=200, nlayers=3)
-    transformer = transformer.to(device)
+    transformer = LightningTransformer(vocab_size=MOST_COMMON_WORDS+1, ninp=500, nhead=2, nhid=200, nlayers=2)
+    # transformer = transformer.to(device)
     """
     The Trainer automatically calls the appropriate methods in your LightningModule. 
     When trainer.fit(model) is called, PyTorch Lightning will:
@@ -33,7 +35,7 @@ def main():
 
     trainer = Trainer(
         max_epochs=10,
-        accelerator=device,  # use 'cuda' if available; otherwise, use 'cpu'
+        accelerator='gpu',  # use 'cuda' if available; otherwise, use 'cpu'
         devices=1,          # number of GPUs, if available
         log_every_n_steps=100,
         logger=CSVLogger("csv_logs", name="transformer") # save logs to csv file in ogs/transformer/ directory.

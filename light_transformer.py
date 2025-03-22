@@ -19,8 +19,11 @@ from torch.nn.modules import MultiheadAttention
 from torch.utils.data import DataLoader, Dataset
 
 from lightning.pytorch import LightningModule
+from torch.utils.data import IterableDataset, get_worker_info
+from itertools import islice
 
 _REQUESTS_AVAILABLE = RequirementCache("requests")
+MOST_COMMON_WORDS = 50000
 
 
 if hasattr(MultiheadAttention, "_reset_parameters") and not hasattr(MultiheadAttention, "reset_parameters"):
@@ -172,7 +175,7 @@ class WMTDataset(Dataset):
         __getitem__(index: int) -> tuple[Tensor, Tensor]:
             Returns a tuple containing the input and target tensors for the given index.
     """
-    def __init__(self, file_path: Path, vocab, dictionary, block_size: int = 35) -> None:
+    def __init__(self, file_path: Path, vocab, dictionary, block_size: int = 10) -> None:
         # Assume the file is a plain text file containing English text
         self.data, self.dictionary = tokenize(file_path, vocab, dictionary)
         self.block_size = block_size
@@ -190,6 +193,52 @@ class WMTDataset(Dataset):
         inputs = self.data[start:end]
         target = self.data[start+1:end+1]
         return inputs, target
+
+class WMTIterableDataset(IterableDataset):
+    def __init__(self, file_path: Path, vocab, dictionary, block_size: int = 10) -> None:
+        """
+        Args:
+            file_path (Path): Path to the text file.
+            vocab: A vocabulary object (e.g., a dict-like structure) to check for known words.
+            dictionary: A Dictionary instance with a word2idx attribute.
+            block_size (int): Number of tokens per block.
+        """
+        self.file_path = file_path
+        self.vocab = vocab
+        self.dictionary = dictionary
+        self.block_size = block_size
+
+    def _line_iterator(self):
+        # Open the file and yield one line at a time.
+        with open(self.file_path, encoding="utf8") as f:
+            for line in f:
+                yield line
+
+    def __iter__(self):
+        # For multi-worker setup: each worker processes a slice of the file.
+        worker_info = get_worker_info()
+        if worker_info is None:
+            file_iter = self._line_iterator()
+        else:
+            # Split the file lines among workers using islice
+            file_iter = islice(self._line_iterator(), worker_info.id, None, worker_info.num_workers)
+        
+        buffer = []  # Accumulates token indices
+        for line in file_iter:
+            # Tokenize: add start and end tokens, split on whitespace, and replace unknown words.
+            words = ["<S>"] + line.strip().split() + ["</S>"]
+            words = [word if word in self.vocab else "<UNK>" for word in words]
+            # Convert words to indices using the dictionary.
+            indices = [self.dictionary.word2idx[word] for word in words if word in self.dictionary.word2idx]
+            buffer.extend(indices)
+            # Yield blocks once we have enough tokens.
+            while len(buffer) >= self.block_size + 1:
+                inputs = buffer[:self.block_size]
+                targets = buffer[1:self.block_size + 1]
+                yield torch.tensor(inputs, dtype=torch.int64), torch.tensor(targets, dtype=torch.int64)
+                # Remove the tokens that were yielded.
+                buffer = buffer[self.block_size:]
+
 
 class Dictionary:
     """
@@ -279,6 +328,7 @@ class LightningTransformer(LightningModule):
         self.vocab = Vocabulary()
         self.dictionary = Dictionary()
         self.build_vocab(Path("./data/news.2024.en.train.preprocessed.txt"))
+        self.keep_dict()
         self.validation_step_outputs = []
         self.model = Transformer(vocab_size=vocab_size, ninp=ninp, nhead=nhead, nhid=nhid, nlayers=nlayers)
 
@@ -290,8 +340,30 @@ class LightningTransformer(LightningModule):
                 for word in words:
                     self.vocab.add_word(word)
                     self.dictionary.add_word(word)
-            self.dictionary.add_word("<UNK>")
-        
+
+    def keep_dict(self) -> None:
+        # top_words is the dict of your 50k most frequent words
+        top_words_set = set(self.vocab.most_common(MOST_COMMON_WORDS).keys())
+
+        # Create fresh containers
+        new_word2idx = {}
+        new_idx2word = []
+
+        for word in self.dictionary.idx2word:
+            if word in top_words_set:
+                new_word2idx[word] = len(new_idx2word)
+                new_idx2word.append(word)
+
+        # Make sure <UNK> is included and has a valid index
+        if "<UNK>" not in new_word2idx:
+            new_word2idx["<UNK>"] = len(new_idx2word)
+            new_idx2word.append("<UNK>")
+
+        # Overwrite the old dictionary with newly indexed data
+        self.dictionary.word2idx = new_word2idx
+        self.dictionary.idx2word = new_idx2word
+
+
     def forward(self, inputs: Tensor, target: Tensor) -> Tensor:
         return self.model(inputs, target)
 
@@ -322,9 +394,11 @@ class LightningTransformer(LightningModule):
         return torch.optim.SGD(self.model.parameters(), lr=0.1)
 
     def train_dataloader(self) -> DataLoader:
-        train_dataset = WMTDataset(Path("./data/news.2024.en.train.preprocessed.txt"), self.vocab.most_common(80000), self.dictionary)
-        return DataLoader(train_dataset, batch_size=1024, shuffle=True)
+        # train_dataset = WMTDataset(Path("./data/news.2024.en.train.preprocessed.txt"), self.vocab.most_common(MOST_COMMON_WORDS), self.dictionary)
+        train_dataset = WMTIterableDataset(Path("./data/news.2024.en.train.preprocessed.txt"), self.vocab.most_common(MOST_COMMON_WORDS), self.dictionary)
+        return DataLoader(train_dataset, batch_size=1024, shuffle=True, num_workers=4)
 
     def val_dataloader(self) -> DataLoader:
-        val_dataset = WMTDataset(Path("./data/news.2024.en.valid.preprocessed.txt"), self.vocab.most_common(80000), self.dictionary)
-        return DataLoader(val_dataset, batch_size=1024)
+        # val_dataset = WMTDataset(Path("./data/news.2024.en.valid.preprocessed.txt"), self.vocab.most_common(MOST_COMMON_WORDS), self.dictionary)
+        val_dataset = WMTIterableDataset(Path("./data/news.2024.en.valid.preprocessed.txt"), self.vocab.most_common(MOST_COMMON_WORDS), self.dictionary)
+        return DataLoader(val_dataset, batch_size=1024, num_workers=4)
