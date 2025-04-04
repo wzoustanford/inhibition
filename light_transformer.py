@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader, Dataset
 from lightning.pytorch import LightningModule
 from torch.utils.data import IterableDataset, get_worker_info
 from itertools import islice
+import random
 
 _REQUESTS_AVAILABLE = RequirementCache("requests")
 MOST_COMMON_WORDS = 50000
@@ -90,7 +91,7 @@ class Transformer(nn.Module):
         self.src_mask = None
 
     def forward(self, inputs: Tensor, target: Tensor, mask: Optional[Tensor] = None) -> Tensor:
-        _, t = inputs.shape
+        _, t = target.shape
 
         # we assume target is already shifted w.r.t. inputs
         if mask is None:
@@ -143,7 +144,7 @@ class PositionalEncoding(nn.Module):
             # TODO: Could make this a `nn.Parameter` with `requires_grad=False`
             self.pe = self._init_pos_encoding(device=x.device)
 
-        x = x + self.pe[:, x.size(1)]
+        x = x + self.pe[:, :x.size(1)]
         return self.dropout(x)
 
     def _init_pos_encoding(self, device: torch.device) -> Tensor:
@@ -239,6 +240,74 @@ class WMTIterableDataset(IterableDataset):
                 # Remove the tokens that were yielded.
                 buffer = buffer[self.block_size:]
 
+class ShuffleWMTIterableDataset(IterableDataset):
+    def __init__(self, file_path: Path, vocab, dictionary, block_size: int = 10, shuffle: bool = False, shuffle_buffer_size: int = 1000) -> None:
+        """
+        Args:
+            file_path (Path): Path to the text file.
+            vocab: A vocabulary object (e.g., a dict-like structure) to check for known words.
+            dictionary: A Dictionary instance with a word2idx attribute.
+            block_size (int): Number of tokens per block.
+            shuffle (bool): Whether to shuffle the dataset.
+            shuffle_buffer_size (int): Size of the shuffle buffer.
+        """
+        self.file_path = file_path
+        self.vocab = vocab
+        self.dictionary = dictionary
+        self.block_size = block_size
+        self.shuffle = shuffle
+        self.shuffle_buffer_size = shuffle_buffer_size
+
+    def _line_iterator(self):
+        with open(self.file_path, encoding="utf8") as f:
+            for line in f:
+                yield line
+
+    def _block_iterator(self, file_iter):
+        buffer = []
+        for line in file_iter:
+            words = ["<S>"] + line.strip().split() + ["</S>"]
+            words = [word if word in self.vocab else "<UNK>" for word in words]
+            indices = [self.dictionary.word2idx[word] for word in words if word in self.dictionary.word2idx]
+            buffer.extend(indices)
+
+            while len(buffer) >= self.block_size + 1:
+                inputs = buffer[:self.block_size]
+                targets = buffer[1:self.block_size + 1]
+                yield torch.tensor(inputs, dtype=torch.int64), torch.tensor(targets, dtype=torch.int64)
+                buffer = buffer[self.block_size:]
+
+    def __iter__(self):
+        worker_info = get_worker_info()
+        if worker_info is None:
+            file_iter = self._line_iterator()
+        else:
+            file_iter = islice(self._line_iterator(), worker_info.id, None, worker_info.num_workers)
+
+        block_iter = self._block_iterator(file_iter)
+
+        if self.shuffle:
+            # Implement a shuffle buffer
+            shuffle_buffer = []
+            try:
+                # Fill the shuffle buffer initially
+                for _ in range(self.shuffle_buffer_size):
+                    shuffle_buffer.append(next(block_iter))
+            except StopIteration:
+                pass  # Handle smaller datasets
+
+            random.shuffle(shuffle_buffer)
+
+            while shuffle_buffer:
+                yield shuffle_buffer.pop()
+                try:
+                    shuffle_buffer.append(next(block_iter))
+                    if len(shuffle_buffer) % self.shuffle_buffer_size == 0:
+                        random.shuffle(shuffle_buffer)
+                except StopIteration:
+                    continue
+        else:
+            yield from block_iter
 
 class Dictionary:
     """
@@ -395,10 +464,73 @@ class LightningTransformer(LightningModule):
 
     def train_dataloader(self) -> DataLoader:
         # train_dataset = WMTDataset(Path("./data/news.2024.en.train.preprocessed.txt"), self.vocab.most_common(MOST_COMMON_WORDS), self.dictionary)
-        train_dataset = WMTIterableDataset(Path("./data/news.2024.en.train.preprocessed.txt"), self.vocab.most_common(MOST_COMMON_WORDS), self.dictionary)
+        # train_dataset = WMTIterableDataset(Path("./data/news.2024.en.train.preprocessed.txt"), self.vocab.most_common(MOST_COMMON_WORDS), self.dictionary)
+        train_dataset = ShuffleWMTIterableDataset(Path("./data/news.2024.en.train.preprocessed.txt"), self.vocab.most_common(MOST_COMMON_WORDS), self.dictionary, shuffle=True, shuffle_buffer_size=1000)
         return DataLoader(train_dataset, batch_size=1024, shuffle=True, num_workers=4)
 
     def val_dataloader(self) -> DataLoader:
         # val_dataset = WMTDataset(Path("./data/news.2024.en.valid.preprocessed.txt"), self.vocab.most_common(MOST_COMMON_WORDS), self.dictionary)
-        val_dataset = WMTIterableDataset(Path("./data/news.2024.en.valid.preprocessed.txt"), self.vocab.most_common(MOST_COMMON_WORDS), self.dictionary)
+        # val_dataset = WMTIterableDataset(Path("./data/news.2024.en.valid.preprocessed.txt"), self.vocab.most_common(MOST_COMMON_WORDS), self.dictionary)
+        val_dataset = ShuffleWMTIterableDataset(Path("./data/news.2024.en.valid.preprocessed.txt"), self.vocab.most_common(MOST_COMMON_WORDS), self.dictionary, shuffle=False)
         return DataLoader(val_dataset, batch_size=1024, num_workers=4)
+    
+    def sample_next_token(self, logits, temperature=1.0, top_k=None, top_p=0.9, generated_indices=None, repetition_penalty=1.2):
+        # Adjust logits by temperature
+        logits = logits / temperature
+        # Apply repetition penalty
+        if repetition_penalty > 1.0 and generated_indices is not None:
+            last_token = generated_indices[-1]
+            logits[last_token] /= repetition_penalty
+        # Apply softmax to get probabilities
+        probabilities = torch.softmax(logits, dim=-1)
+
+        # Apply top-k sampling if specified
+        if top_k is not None:
+            values, indices = torch.topk(probabilities, top_k)
+            # Create a mask to zero out probabilities not in the top_k
+            mask = torch.zeros_like(probabilities)
+            mask.scatter_(dim=-1, index=indices, src=values)
+            probabilities = mask / mask.sum()
+        
+        # Apply top-p sampling if specified
+        if top_p is not None:
+            sorted_probs, sorted_indices = torch.sort(probabilities, descending=True)
+            cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+            # Create a mask for tokens that make up the top-p cumulative probability
+            sorted_probs[cumulative_probs > top_p] = 0
+            probabilities = torch.zeros_like(probabilities)
+            probabilities.scatter_(dim=-1, index=sorted_indices, src=sorted_probs)
+            probabilities = probabilities / probabilities.sum()
+
+        # Sample from the resulting distribution
+        next_token_idx = torch.multinomial(probabilities, num_samples=1).item()
+        return next_token_idx
+
+    
+    def generate(self, prompt: str, max_tokens: int = 50, temperature: float = 1.0):
+        self.eval()
+        words = ["<S>"] + prompt.split()
+        # if work in vocab, get the index, else use index of <UNK>
+        indices = [self.dictionary.word2idx.get(word, self.dictionary.word2idx["<UNK>"]) for word in words]
+        inputs = torch.tensor(indices).unsqueeze(0).to(self.device)  # [1, seq_len]
+
+        # Decoder input alwasy starts with <S> token
+        generated_indices = inputs.tolist()[0] # start from <S> token
+
+        for _ in range(max_tokens):
+            generated_indices_tensor = torch.tensor(generated_indices).unsqueeze(0).to(self.device)            
+            outputs = self.model(inputs, generated_indices_tensor)
+            # Get the last token's logits
+            next_token_idx = self.sample_next_token(logits=outputs[-1], temperature=temperature, generated_indices=generated_indices)
+
+            generated_indices.append(next_token_idx)
+
+            # Stop generation if end token is produced
+            if self.dictionary.idx2word[next_token_idx] == "</S>":
+                break
+
+        generated_words = [self.dictionary.idx2word[idx] for idx in generated_indices]
+
+        # Skip the initial <S> token when joining
+        return ' '.join(generated_words[1:])
+
