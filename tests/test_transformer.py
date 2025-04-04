@@ -42,5 +42,17 @@ def main():
     )
     trainer.fit(transformer)
 
+    transformer = LightningTransformer.load_from_checkpoint(
+        "csv_logs/transformer/version_0/checkpoints/epoch=9-step=999.ckpt",
+        vocab_size=MOST_COMMON_WORDS+1, 
+        ninp=500, 
+        nhead=2, 
+        nhid=200, 
+        nlayers=2)
+    transformer.eval()
+
+    prompt = "The government announed today that it will"
+    print("Generated text:", transformer.generate(prompt, 50))
+
 if __name__ == "__main__":
     main()
