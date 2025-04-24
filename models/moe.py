@@ -1,26 +1,35 @@
 import torch, math, pdb
 import torch.nn as nn 
 import torch.nn.functional as F
-from typing import List
 
 class RouterWithDefinedModelAndGLU(nn.Module): 
     def __init__(
             self, 
             defined_model: nn.Module,
-            router_hidden_dim: int,
             num_experts: int,
-            glu_on: bool,
             device: torch.device,
         ): 
         super(RouterWithDefinedModelAndGLU, self).__init__() 
-        self.glu_on = glu_on 
         self.defined_model = defined_model
-        self.router = RouterWithGLU(defined_model.h_output_dim, router_hidden_dim, num_experts, glu_on=glu_on).to(device)
+        self.router = SimpleRouterWithGLU(defined_model.h_output_dim, num_experts).to(device)
 
     def forward(self, input: torch.Tensor): 
         h = self.defined_model(input)
         return self.router(h)
         
+class SimpleRouterWithGLU(nn.Module): 
+    def __init__(
+            self, 
+            input_dim: int, 
+            num_experts: int, 
+        ): 
+        super(SimpleRouterWithGLU, self).__init__() 
+                
+        self.h_layer = nn.Linear(input_dim, num_experts) 
+        self.router_act = nn.Softmax(dim=1) 
+
+    def forward(self, input: torch.Tensor):         #h_1 = self.h_layer_norm(h_1) 
+        return self.router_act(self.h_layer(input)) 
 
 class RouterWithGLU(nn.Module): 
     def __init__(
@@ -61,7 +70,7 @@ class MoEWrapper(nn.Module):
             self, 
             defined_router_model: nn.Module,
             K: int, 
-            expert_list: List[nn.Module], 
+            expert_list: nn.ModuleList, 
             output_dim: int,
             glu_on: bool, 
             device: torch.device,
@@ -72,8 +81,8 @@ class MoEWrapper(nn.Module):
         self.expert_list = expert_list 
         self.glu_on = glu_on 
         self.num_experts = len(expert_list) 
-        router_hidden_dim = 256 
-        self.router= RouterWithDefinedModelAndGLU(defined_router_model, router_hidden_dim, self.num_experts, glu_on=glu_on, device=device)
+        #router_hidden_dim = -1
+        self.router= RouterWithDefinedModelAndGLU(defined_router_model, self.num_experts, device=device)
         
         #self.output_layer_norm = torch.nn.LayerNorm(normalized_shape=output_dim, elementwise_affine=False)
         self.renorm_sm = nn.Softmax(dim=1) 
@@ -110,7 +119,7 @@ class MoEWrapperExpertSelection(nn.Module):
             self, 
             defined_model: nn.Module,
             K: int, 
-            expert_list: List[nn.Module], 
+            expert_list: nn.ModuleList, 
             glu_on: bool, 
             device: torch.device,
         ):

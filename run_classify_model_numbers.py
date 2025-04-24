@@ -1,34 +1,36 @@
 import torch, pickle, pdb
-from models.classify_model import ClassifyModelMNIST
-from models.moe import MoEWrapper
+from models.classify_model import ClassifyModel
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 
-
-device = 'mps'
+# Define the transformation
 transform = transforms.ToTensor()
 #transforms.Normalize((0.1307,), (0.3081,)) 
 # Download the MNIST dataset and apply the transformation
 train_dataset = datasets.MNIST(root='./data', train=True, download=True, transform=transform)
 test_dataset = datasets.MNIST(root='./data', train=False, download=True, transform=transform)
 
+# Create data loaders
+#batch_size = 64
+#train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+#test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+# Example: Accessing a batch of data
+#images, labels = next(iter(train_loader))
+#print(f"Shape of images batch: {images.shape}") #torch.Size([64, 1, 28, 28])
+#print(f"Shape of labels batch: {labels.shape}") #torch.Size([64])
+
 D_mnist = train_dataset.data.unsqueeze(1)/255.0
-L_mnist = train_dataset.targets 
+L_cl_mnist = torch.zeros(len(D_mnist))
 
-print(f"D_mnist.shape: {str(D_mnist.shape)}")
-print(f"L_mnist.shape: {str(L_mnist.shape)}")
-
-## load squares data 
-f = open('data/squares/squares_data_10nums.pkl', 'rb')
-data = pickle.load(f); f.close()
+f = open('data/squares/squares_data.pkl', 'rb')
+data = pickle.load(f)
+f.close()
 D_squares = data['D'].unsqueeze(1)
-L_squares = data['L'].squeeze(1) - 1 
-
-print(f"D_squares.shape: {str(D_squares.shape)}")
-print(f"L_squares.shape: {str(L_squares.shape)}")
+L_cl_squares = torch.ones(len(D_squares))
 
 D = torch.cat((D_mnist, D_squares), dim=0)
-L = torch.cat((L_mnist, L_squares), dim=0)
+L = torch.cat((L_cl_mnist, L_cl_squares), dim=0)
 
 ## randomly permute the dataset 
 rndidx = torch.randperm(D.shape[0])
@@ -36,42 +38,27 @@ D = D[rndidx, :, :, :]
 L = L[rndidx]
 
 split_int = int(0.8*len(D))
-D_tr = D[:split_int].to(device)
-D_te = D[split_int:].to(device)
+D_tr = D[:split_int]
+D_te = D[split_int:]
 
-L_tr = L[:split_int].to(device)
-L_te = L[split_int:].to(device)
+L_tr = L[:split_int]
+L_te = L[split_int:]
+
 
 print(f"D_tr.shape: {str(D_tr.shape)}")
 print(f"L_tr.shape: {str(L_tr.shape)}")
 print(f"D_te.shape: {str(D_te.shape)}")
 print(f"L_te.shape: {str(L_te.shape)}")
 
-#model = ClassifyModelMNIST().to(device)
-#model = ClassifyModelMNISTMOE(use_glu=False).to(device)
-router_conv_base_model = ClassifyModelMNIST(h_only=True).to(device)
-#ClassifyModelMNIST(h_only=False).to(device)
-
-model = MoEWrapper(
-    defined_router_model = router_conv_base_model, 
-    K = 1, 
-    expert_list = torch.nn.ModuleList([ClassifyModelMNIST(h_only=False).to(device) for i in range(2)]), 
-    output_dim = 10, 
-    glu_on = False, 
-    device = device,
-)
-model.zero_grad()
-router_conv_base_model.zero_grad()
-
-num_samples = 256
-num_steps = int(200 * len(D_tr) / num_samples) # 5 epochs
+model = ClassifyModel()
+num_samples = 128 
+num_steps = int(5 * len(D_tr) / num_samples) # 5 epochs
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 optimizer.zero_grad()
 
 for i in range(num_steps): 
     model.train()
-    model.router.defined_model.train()
-    model.router.router.train()
+    model.zero_grad()
     rndidx= torch.randperm(D_tr.shape[0])[:num_samples]
     x = D_tr[rndidx, :, :, :]
     y = L_tr[rndidx] 
@@ -82,18 +69,16 @@ for i in range(num_steps):
     # print(f"x.shape: {str(x.shape)}")
     # print(f"y.shape: {str(y.shape)}")
     logits = model(x)
-    y = torch.nn.functional.one_hot(y.long(), num_classes=10).squeeze(1).float()
+    y = torch.nn.functional.one_hot(y.long(), num_classes=2).squeeze(1).float()
     #print(y)
     #print(logits)
     loss = torch.nn.functional.cross_entropy(logits, y)
     loss.backward()
     optimizer.step()
 
-    print(f"step: {i}, loss: {loss.item()}")
-    if i != 0 and i % 100 == 0:
+    if i != 0 and i % 50 == 0:
+        print(f"step: {i}, loss: {loss.item()}")
         model.eval()
-        model.router.defined_model.eval()
-        model.router.router.eval()
         logits = model(D_te)
         preds = torch.argmax(logits, dim=1)
         acc = (preds == L_te).float().mean()
