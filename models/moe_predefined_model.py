@@ -1,35 +1,45 @@
 import torch, math, pdb
 import torch.nn as nn 
 import torch.nn.functional as F
+
+class RouterWithDefinedModelAndGLU(nn.Module): 
+    def __init__(
+            self, 
+            defined_model: nn.Module,
+            num_experts: int,
+            device: torch.device,
+        ): 
+        super(RouterWithDefinedModelAndGLU, self).__init__() 
+        self.defined_model = defined_model
+        self.router = SimpleRouterWithGLU(defined_model.h_output_dim, num_experts).to(device)
+
+    def forward(self, input: torch.Tensor): 
+        h = self.defined_model(input)
+        return self.router(h)
         
 class SimpleRouterWithGLU(nn.Module): 
     def __init__(
             self, 
             input_dim: int, 
             num_experts: int, 
-            expert_choice: bool = False, 
         ): 
         super(SimpleRouterWithGLU, self).__init__() 
                 
         self.h_layer = nn.Linear(input_dim, num_experts) 
-        if expert_choice: 
-            self.router_act = nn.Softmax(dim=0) 
-        else:
-            self.router_act = nn.Softmax(dim=1) 
+        self.router_act = nn.Softmax(dim=1) 
 
-    def forward(self, input: torch.Tensor): 
+    def forward(self, input: torch.Tensor):         #h_1 = self.h_layer_norm(h_1) 
         return self.router_act(self.h_layer(input)) 
 
-class TwoLayerRouterWithGLU(nn.Module): 
+class RouterWithGLU(nn.Module): 
     def __init__(
             self, 
             input_dim: int, 
             hidden_dim: int, 
             num_experts: int, 
             glu_on: bool,
-            expert_choice: bool = False, 
         ): 
-        super(TwoLayerRouterWithGLU, self).__init__() 
+        super(RouterWithGLU, self).__init__() 
         self.glu_on = glu_on 
 
         self.h_layer_1 = nn.Linear(input_dim, hidden_dim) 
@@ -37,13 +47,11 @@ class TwoLayerRouterWithGLU(nn.Module):
             self.h_layer_1_glu = nn.Linear(input_dim, hidden_dim) 
             self.h_glu_act = F.sigmoid 
 
-        self.h_act = F.relu                
+        self.h_act = F.relu
+        #self.h_layer_norm = torch.nn.LayerNorm(hidden_dim) 
+                
         self.h_layer_2 = nn.Linear(hidden_dim, num_experts) 
-
-        if expert_choice: 
-            self.router_act = nn.Softmax(dim=0) 
-        else:
-            self.router_act = nn.Softmax(dim=1) 
+        self.router_act = nn.Softmax(dim=1) ## expert choice 
 
     def forward(self, input: torch.Tensor): 
         h_1 = self.h_layer_1(input)
@@ -56,37 +64,31 @@ class TwoLayerRouterWithGLU(nn.Module):
         #h_1 = self.h_layer_norm(h_1) 
         return self.router_act(self.h_layer_2(h_1)) 
 
-class MoEWrapper(nn.Module): 
+class MoEWrapperPreDefinedRouter(nn.Module): 
     ## Expert Choice/Selection 
     def __init__(
             self, 
-            input_dim: int,
-            output_dim: int,
-            expert_list: nn.ModuleList, 
+            defined_router_model: nn.Module,
             K: int, 
+            expert_list: nn.ModuleList, 
+            output_dim: int,
             glu_on: bool, 
             device: torch.device,
-            expert_choice: bool = False, 
-            output_type: str = 'sum',
         ):
-        super(MoEWrapper, self).__init__() 
-        self.input_dim = input_dim
+        super(MoEWrapperPreDefinedRouter, self).__init__() 
         self.output_dim = output_dim
         self.K = K 
         self.expert_list = expert_list 
         self.glu_on = glu_on 
         self.num_experts = len(expert_list) 
-        router_hidden_dim = 128 
-        self.router = TwoLayerRouterWithGLU(input_dim, router_hidden_dim, self.num_experts, glu_on=glu_on, expert_choice=expert_choice).to(device) 
+        #router_hidden_dim = -1
+        self.router= RouterWithDefinedModelAndGLU(defined_router_model, self.num_experts, device=device)
+        #self.router = SimpleRouterWithGLU(defined_router_model.h_output_dim, self.num_experts).to(device)
         
         #self.output_layer_norm = torch.nn.LayerNorm(normalized_shape=output_dim, elementwise_affine=False)
-        if expert_choice: 
-            self.renorm_sm = nn.Softmax(dim=0) 
-        else: 
-            self.renorm_sm = nn.Softmax(dim=1) 
+        self.renorm_sm = nn.Softmax(dim=1) 
         self.device = device
-        self.expert_choice = expert_choice
-        self.output_type = output_type
+        #self.rand_l = torch.rand((64, self.num_experts))
 
     def forward(self, input: torch.Tensor):
         if len(self.expert_list) == 1: 
@@ -95,54 +97,20 @@ class MoEWrapper(nn.Module):
         #input = self.input_layer_norm(input)
         l = self.router(input)
         
-        if self.expert_choice: 
-            batch_K = math.ceil(self.K * 1.0 / self.num_experts * input.size()[0])
-            ws, ib = torch.topk(l, batch_K, dim=0)
-        else:
-            ws, ib = torch.topk(l, self.K, dim=1)
-        
+        ws, ib = torch.topk(l, self.K, dim=1)
         nws = self.renorm_sm(ws) 
 
-        if self.output_type == 'sum': 
-            output = torch.zeros((input.size()[0], self.output_dim)).to(self.device) 
-        else:
-            output_list  = [torch.zeros(input.size()[0], self.output_dim, device=self.device) for i in range(self.num_experts)]
-            output = torch.zeros((input.size()[0], self.output_dim * self.num_experts), device=self.device) 
-            if self.output_type == 'concat_sum':
-                temp_sum_output = torch.zeros((input.size()[0], self.output_dim), device=self.device) 
-        
+        output = torch.zeros((input.size()[0], self.output_dim)).to(self.device) 
         for expert in range(self.num_experts): 
-            if self.expert_choice: 
-                selected_data = torch.index_select(input, 0, ib[:, expert]) 
-                selected_output = self.expert_list[expert](selected_data) 
-                selected_output = torch.mul(selected_output, nws[:, expert].reshape((nws.size()[0],1))) 
-                if self.output_type == 'sum': 
-                    output[ib[:, expert], :] += selected_output 
-                else:
-                    output_list[expert][ib[:, expert], :] = selected_output 
-                    if self.output_type == 'concat_sum':
-                        temp_sum_output[ib[:, expert], :] += selected_output
-            else:
-                filter = torch.sum(ib == expert, dim=1) > 0 
-                if filter.sum() == 0: 
-                    continue
-                selected_data = input[filter] 
-                #selected_data = torch.index_select(input, 0, ib[:, expert]) 
-                selected_output = self.expert_list[expert](selected_data) 
-                selected_output = torch.mul(selected_output, nws[filter][ib[filter] == expert].reshape((-1,1))) 
-                if self.output_type == 'sum': 
-                    output[filter] += selected_output 
-                else:
-                    output_list[expert][filter] = selected_output 
-                    if self.output_type == 'concat_sum':
-                        temp_sum_output[filter] += selected_output 
-
-        if self.output_type != 'sum':
-            if self.output_type == 'concat_sum': 
-                #temp_sum_output = self.temp_output_layer_norm(temp_sum_output)
-                for i in range(self.num_experts): 
-                    output_list[i] += temp_sum_output
-            output = torch.concat(output_list, dim=1)
+            filter = torch.sum(ib == expert, dim=1) > 0 
+            if filter.sum() == 0: 
+                continue
+            selected_data = input[filter] 
+            #selected_data = torch.index_select(input, 0, ib[:, expert]) 
+            selected_output = self.expert_list[expert](selected_data) 
+            selected_output = torch.mul(selected_output, nws[filter][ib[filter] == expert].reshape((-1,1))) 
+            output[filter] = selected_output
+            #output[ib[:, expert], :] += selected_output 
         #output = self.output_layer_norm(output)
         return output
 

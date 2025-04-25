@@ -88,18 +88,41 @@ class ClassifyModelCATSDOGS(nn.Module):
         return x 
 
 class ClassifyModelMNIST(nn.Module):
-    def __init__(self, h_only: bool = False, use_convnet = False):
+    def __init__(self, h_only: bool = False, use_convnet = True):
         super(ClassifyModelMNIST, self).__init__()
-
+        
         if use_convnet: 
+            self.convnet = nn.Sequential(
+                torch.nn.Conv2d(1, 64, kernel_size=[3, 3]),
+                torch.nn.ReLU(),
+                torch.nn.MaxPool2d(kernel_size=3, stride=1),
+                torch.nn.Conv2d(64, 32, kernel_size=[4, 4]),
+                torch.nn.ReLU(),
+                torch.nn.MaxPool2d(kernel_size=3, stride=2),
+                torch.nn.Flatten(1),
+                torch.nn.Linear(32 * 10 * 10, 128),
+                torch.nn.Tanh(),
+                torch.nn.Linear(128, 10),
+                torch.nn.Softmax(dim=1),
+            )
+            self.convnet_h = nn.Sequential(
+                torch.nn.Conv2d(1, 64, kernel_size=[3, 3]),
+                torch.nn.ReLU(),
+                torch.nn.MaxPool2d(kernel_size=3, stride=1),
+                torch.nn.Conv2d(64, 32, kernel_size=[4, 4]),
+                torch.nn.ReLU(),
+                torch.nn.MaxPool2d(kernel_size=3, stride=2),
+                torch.nn.Flatten(1),
+            )
+            """
             self.conv1 = nn.Conv2d(1, 64, kernel_size=[3, 3])
             self.maxpool_layer1 = nn.MaxPool2d(kernel_size=3, stride=1)
             self.conv2 = nn.Conv2d(64, 32, kernel_size=[4, 4])
             self.maxpool_layer2 = nn.MaxPool2d(kernel_size=3, stride=2)
             self.linear1 = nn.Linear(32 * 10 * 10, 128)
-            self.glu_linear1 = nn.Linear(32 * 10 * 10, 128)
+            #elf.glu_linear1 = nn.Linear(32 * 9 * 9, 128)
             self.linear2 = nn.Linear(128, 10)
-
+            """
         else: 
             # dnn arch 
             self.linear1 = nn.Linear(784, 512)
@@ -130,42 +153,15 @@ class ClassifyModelMNIST(nn.Module):
 
             x = nn.Tanh()(x)
             if self.h_only: 
-                x = nn.Dropout(0.75)(x)
+                x = nn.Dropout(0.00)(x)
                 return x
             x = self.linear3(x)
             x = nn.Softmax(dim=1)(x)
         return x
 
     def forward_convnet(self, x):
-        x = self.conv1(x)
-        x = nn.ReLU()(x)
-        x = self.maxpool_layer1(x)
-        x = self.conv2(x)
-        x = nn.ReLU()(x)
-        x = self.maxpool_layer2(x)
-        x = x.view(-1, 32 * 10 * 10)
-        x = self.linear1(x)
-        x = nn.Tanh()(x)
-        """
-        if self.use_glu: 
-            h = self.linear2(x)
-            hg = self.glu_linear2(x)
-            x = torch.mul(h, torch.sigmoid(hg))
-        else: 
-            x = self.linear2(x)
-        x = nn.Tanh()(x)
-
-        if True: 
-            h = self.linear3(x)
-            hg = self.glu_linear3(x)
-            x = torch.mul(h, torch.sigmoid(hg))
-        else: 
-            x = self.linear3(x)
-        x = nn.Tanh()(x)
-        """
         if self.h_only: 
-            return x
-        
-        x = self.linear2(x)
-        x = nn.Softmax(dim=1)(x)
+            x = self.convnet_h(x)
+        else: 
+            x = self.convnet(x)
         return x 
