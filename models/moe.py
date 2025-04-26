@@ -37,7 +37,7 @@ class TwoLayerRouterWithGLU(nn.Module):
             self.h_layer_1_glu = nn.Linear(input_dim, hidden_dim) 
             self.h_glu_act = F.sigmoid 
 
-        self.h_act = F.relu                
+        self.h_act = F.tanh #F.relu                
         self.h_layer_2 = nn.Linear(hidden_dim, num_experts) 
 
         if expert_choice: 
@@ -79,7 +79,8 @@ class MoEWrapper(nn.Module):
         router_hidden_dim = 128 
         self.router = TwoLayerRouterWithGLU(input_dim, router_hidden_dim, self.num_experts, glu_on=glu_on, expert_choice=expert_choice).to(device) 
         
-        #self.output_layer_norm = torch.nn.LayerNorm(normalized_shape=output_dim, elementwise_affine=False)
+        self.input_layer_norm = torch.nn.LayerNorm(normalized_shape=input_dim, elementwise_affine=False)
+        self.output_layer_norm = torch.nn.LayerNorm(normalized_shape=output_dim, elementwise_affine=False)
         if expert_choice: 
             self.renorm_sm = nn.Softmax(dim=0) 
         else: 
@@ -92,6 +93,7 @@ class MoEWrapper(nn.Module):
         if len(self.expert_list) == 1: 
             return self.expert_list[0](input) 
 
+        input = self.input_layer_norm(input)
         #input = self.input_layer_norm(input)
         l = self.router(input)
         
@@ -143,6 +145,7 @@ class MoEWrapper(nn.Module):
                 for i in range(self.num_experts): 
                     output_list[i] += temp_sum_output
             output = torch.concat(output_list, dim=1)
+        
         #output = self.output_layer_norm(output)
         return output
 

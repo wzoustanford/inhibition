@@ -5,8 +5,8 @@ import matplotlib.pyplot as plt
 from models.classify_model import ClassifyModelMNIST
 from models.moe import MoEWrapper
 
-device = 'mps'
-K_VALUE = 4
+device = 'cuda'
+K_VALUE = 3
 NUM_EXPERTS = 5
 # Define the transformation
 transform = transforms.ToTensor()
@@ -31,8 +31,8 @@ print(f"L_squares.shape: {str(L_squares.shape)}")
 
 #D_squares=torch.Tensor()
 #L_squares=torch.Tensor()
-D = torch.cat((D_mnist, D_squares), dim=0).to(device)
-L = torch.cat((L_mnist, L_squares), dim=0).to(device)
+D = torch.cat((D_mnist, D_squares), dim=0)
+L = torch.cat((L_mnist, L_squares), dim=0)
 
 rndidx = torch.randperm(len(D))
 D = D[rndidx]
@@ -52,6 +52,8 @@ print(f"Ltr.shape: {str(Ltr.shape)}")
 class ClassifyModelMOE(torch.nn.Module): 
     def __init__(self): 
         super(ClassifyModelMOE, self).__init__() 
+
+        moe_output_type = 'sum'
         self.conv_base_model = ClassifyModelMNIST(h_only=True, use_convnet=True).to(device)
 
         self.moe_model = MoEWrapper(
@@ -68,13 +70,16 @@ class ClassifyModelMOE(torch.nn.Module):
                         ) for i in range(NUM_EXPERTS) 
                     ]
                 ), 
-            K = K_VALUE,
-            glu_on = False, 
-            device = device,
+            K = K_VALUE, 
+            glu_on = True, 
+            device = device, 
             expert_choice = False, 
-            output_type = 'sum',
+            output_type = moe_output_type, 
         )
-        self.sm_linear = torch.nn.Linear(128, 10, device=device)
+        if moe_output_type != 'sum': 
+            self.sm_linear = torch.nn.Linear(128 * NUM_EXPERTS, 10, device=device)
+        else: 
+            self.sm_linear = torch.nn.Linear(128, 10, device=device)
 
     def forward(self, x): 
         x = self.conv_base_model(x)
@@ -102,17 +107,20 @@ model = torch.nn.Sequential(
 ).to(device)
 """
 model.zero_grad()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.00005)
 
-batch_size = 512
+batch_size = 128
+test_batch_size = 1280 
 
-num_steps = int(200 * len(Dtr) / batch_size)
+num_steps = int(12 * len(Dtr) / batch_size)
 
 for i in range(num_steps): 
     model.train()
     b = torch.randperm(len(Dtr))[:batch_size]
     x = Dtr[b, :, :, :]
     y = Ltr[b] 
+    x = x.to(device)
+    y = y.to(device)
     logits = model(x)
     y = torch.nn.functional.one_hot(y.long(), num_classes=10).squeeze(1).float()
     loss = torch.nn.functional.cross_entropy(logits, y)
@@ -122,7 +130,12 @@ for i in range(num_steps):
     if i != 0 and i % 100 == 0:
         print(f"step: {i}, loss: {loss.item()}")
         model.eval()
-        logits = model(Dte)
+        b = torch.randperm(len(Dte))[:test_batch_size]
+        x = Dte[b, :, :, :]
+        y = Lte[b]
+        x = x.to(device)
+        y = y.to(device)
+        logits = model(x)
         preds = torch.argmax(logits, dim=1)
-        acc = (preds == Lte).float().mean()
+        acc = (preds == y).float().mean()
         print(f"---- [Eval] ---- step: {i}, acc: {acc.item()}")
