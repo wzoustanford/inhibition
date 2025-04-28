@@ -1,19 +1,11 @@
-import torch
+import torch, pdb
 import torch.nn as nn
 import torch.nn.functional as F
 
 class GlobalInhibitionModelV1(nn.Module):
-    def __init__(self, acts): 
+    def __init__(self, acts, device): 
         super(GlobalInhibitionModelV1, self).__init__()
         num_hidden_sub_module = 32 
-        self.sub_modules = {} 
-        for name, act_tens in acts.items():
-            input_dim = act_tens.shape[1] if len(act_tens>1) else 1 
-            self.sub_modules[name] = nn.Sequential(
-                nn.Linear(input_dim, num_hidden_sub_module),
-                nn.Tanh(),
-            )
-        self.combine_layer = nn.Linear(len(self.sub_modules) * num_hidden_sub_module, 128), 
         self.activations_list = [
             'moe_model.router.h_glu_act',
             'moe_model.router.h_act',
@@ -22,13 +14,32 @@ class GlobalInhibitionModelV1(nn.Module):
             'y_labels',
             'cross_entropy',
         ]
+        self.sub_modules_dict = {}; module_index = 0
+        self.sub_modules = nn.ModuleList()
+        for list_name in self.activations_list: 
+            for name, act_tens in acts.items():
+                if name == list_name:
+                    input_dim = act_tens.shape[1] if len(act_tens>1) else 1 
+                    self.sub_modules.append(
+                        nn.Sequential(
+                            nn.Linear(input_dim, num_hidden_sub_module),
+                            nn.Tanh(),
+                        )
+                    )
+                    self.sub_modules_dict[name] = module_index
+                    module_index +=1 
+        #assert len(self.sub_modules == len(acts.items))
+        self.combine_layer = nn.Linear(len(self.sub_modules) * num_hidden_sub_module, 128) 
+        self.device = device 
     
     def forward(self, acts): 
         h_output = {}
         for name, act_tens in acts.items():
-            h_output[name] = torch.cat((h_output, self.sub_modules[name]), dim=1)
-        assert len(acts.items == len(self.activations_list))
-        h_output_concat = torch.Tensor()
+            modu = self.sub_modules[self.sub_modules_dict[name]]
+            h_sub_module = modu(act_tens)
+            h_output[name] = h_sub_module
+        #assert len(acts.items == len(self.activations_list))
+        h_output_concat = torch.Tensor().to(self.device)
         for name in self.activations_list: 
             h_output_concat = torch.cat((h_output_concat, h_output[name]), dim = 1)
         return self.combine_layer(h_output_concat)

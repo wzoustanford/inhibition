@@ -96,9 +96,9 @@ class ClassifyModelMOE(torch.nn.Module):
             self.activations[name] = output.detach().to(device)
         return hook
     
-    def forward(self, x): 
+    def forward(self, x, gim_input = None): 
         x = self.conv_base_model(x)
-        x = self.moe_model(x)
+        x = self.moe_model(x) if gim_input is None else self.moe_model(x, gim_input)
         x = self.sm_linear(x)
         x = torch.nn.Softmax(dim=1)(x)
         return x
@@ -106,11 +106,11 @@ class ClassifyModelMOE(torch.nn.Module):
 #model = ClassifyModelMNIST(h_only=False, use_convnet=True).to(device)
 model = ClassifyModelMOE().to(device)
 
-xt = Dtr[:10, :, :, :]
+xt = Dtr[:10, :, :, :].to(device)
 yt = model(xt)
-model.activations['y_label'] = torch.zeros((10, 10)).to(device)
+model.activations['y_labels'] = torch.zeros((10, 10)).to(device)
 model.activations['cross_entropy'] = torch.Tensor().to(device)
-gim_model = GlobalInhibitionModelV1(model.activations).to(device)
+gim_model = GlobalInhibitionModelV1(model.activations, device).to(device)
 
 """
 model = torch.nn.Sequential(
@@ -133,39 +133,60 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.00005)
 optimizer_gim = torch.optim.Adam(gim_model.parameters(), lr=0.00005)
 
 batch_size = 128
-test_batch_size = 1280 
+test_batch_size = 1280
+iter_start_training_gim = 1
 
-num_steps = int(12 * len(Dtr) / batch_size)
+num_steps = int(20 * len(Dtr) / batch_size)
 
 for i in range(num_steps): 
     model.train()
     b = torch.randperm(len(Dtr))[:batch_size]
-    x = Dtr[b, :, :, :]
-    y = Ltr[b] 
-    x = x.to(device)
-    y = y.to(device)
-    if i < 1:
-        logits = model(x)
+    x_train_batch = Dtr[b, :, :, :]
+    y_train_batch = Ltr[b] 
+    x_train_batch = x_train_batch.to(device)
+    y_train_batch = y_train_batch.to(device)
+    if i < iter_start_training_gim:
+        logits = model(x_train_batch)
     else: 
         h_gim = gim_model(model.activations)
-        logits = model(x, h_gim)
+        logits = model(x_train_batch, h_gim)
     
-    y = torch.nn.functional.one_hot(y.long(), num_classes=10).squeeze(1).float()
-    loss = torch.nn.functional.cross_entropy(logits, y)
-    model.activations['y_labels'] = y 
-    model.activations['cross_entropy'] = loss 
-    loss.backward()
+    y_train_batch = torch.nn.functional.one_hot(y_train_batch.long(), num_classes=10).squeeze(1).float()
+    loss_train_batch = torch.nn.functional.cross_entropy(logits, y_train_batch)
+    model.activations['y_labels'] = y_train_batch.detach()
+    model.activations['cross_entropy'] = loss_train_batch.tile((batch_size, 1)).detach()
+    loss_train_batch.backward()
     optimizer.step()
+    optimizer_gim.step()
 
     if i != 0 and i % 100 == 0:
-        print(f"step: {i}, loss: {loss.item()}")
+        print(f"step: {i}, loss: {loss_train_batch.item()}")
         model.eval()
-        b = torch.randperm(len(Dte))[:test_batch_size]
-        x = Dte[b, :, :, :]
-        y = Lte[b]
+        bt = torch.randperm(len(Dte))[:test_batch_size]
+        x = Dte[bt, :, :, :]
+        y = Lte[bt]
         x = x.to(device)
         y = y.to(device)
-        logits = model(x)
+        if i < 1:
+            logits = model(x)
+        else: 
+            b_tr_sim = torch.randperm(len(Dtr))[:test_batch_size]
+            x_tr_sim = Dtr[b_tr_sim, :, :, :].to(device)
+            y_tr_sim = Ltr[b_tr_sim].to(device)
+            logits_tr_sim = model(x_tr_sim)
+            y_tr_sim = torch.nn.functional.one_hot(y_tr_sim.long(), num_classes=10).squeeze(1).float()
+            loss_tr_sim = torch.nn.functional.cross_entropy(logits_tr_sim, y_tr_sim)
+            model.activations['y_labels'] = y_tr_sim.detach()
+            model.activations['cross_entropy'] = loss_tr_sim.tile((test_batch_size, 1)).detach()
+            h_gim_test = gim_model(model.activations)
+            logits = model(x, h_gim_test)
+        
         preds = torch.argmax(logits, dim=1)
         acc = (preds == y).float().mean()
         print(f"---- [Eval] ---- step: {i}, acc: {acc.item()}")
+
+        model.train()
+        _ = model(x_train_batch) #fill the activations again with the previous training batch to continue training
+        model.activations['y_labels'] = y_train_batch.detach()
+        model.activations['cross_entropy'] = loss_train_batch.tile((batch_size, 1)).detach()
+
