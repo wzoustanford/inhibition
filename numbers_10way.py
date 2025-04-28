@@ -2,7 +2,7 @@ import torch, pickle, pdb
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
-from models.classify_model import ClassifyModelMNIST
+from models.classify_model import ClassifyModelMNIST, GlobalInhibitionModelV1
 from models.moe import MoEWrapper
 
 device = 'cuda'
@@ -80,7 +80,22 @@ class ClassifyModelMOE(torch.nn.Module):
             self.sm_linear = torch.nn.Linear(128 * NUM_EXPERTS, 10, device=device)
         else: 
             self.sm_linear = torch.nn.Linear(128, 10, device=device)
-
+        self.activations = {}
+        self.get_activation_list = [
+            "moe_model.router.h_glu_act",
+            "moe_model.router.h_act",
+            "moe_model",
+            "sm_linear",
+        ]
+        for name, modu in self.named_modules():
+            if name in self.get_activation_list:
+                modu.register_forward_hook(self.get_activation(name))
+    
+    def get_activation(self, name): 
+        def hook(module, input, output):
+            self.activations[name] = output.detach().to(device)
+        return hook
+    
     def forward(self, x): 
         x = self.conv_base_model(x)
         x = self.moe_model(x)
@@ -90,6 +105,12 @@ class ClassifyModelMOE(torch.nn.Module):
 
 #model = ClassifyModelMNIST(h_only=False, use_convnet=True).to(device)
 model = ClassifyModelMOE().to(device)
+
+xt = Dtr[:10, :, :, :]
+yt = model(xt)
+model.activations['y_label'] = torch.zeros((10, 10)).to(device)
+model.activations['cross_entropy'] = torch.Tensor().to(device)
+gim_model = GlobalInhibitionModelV1(model.activations).to(device)
 
 """
 model = torch.nn.Sequential(
@@ -107,7 +128,9 @@ model = torch.nn.Sequential(
 ).to(device)
 """
 model.zero_grad()
+gim_model.zero_grad()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.00005)
+optimizer_gim = torch.optim.Adam(gim_model.parameters(), lr=0.00005)
 
 batch_size = 128
 test_batch_size = 1280 
@@ -121,9 +144,16 @@ for i in range(num_steps):
     y = Ltr[b] 
     x = x.to(device)
     y = y.to(device)
-    logits = model(x)
+    if i < 1:
+        logits = model(x)
+    else: 
+        h_gim = gim_model(model.activations)
+        logits = model(x, h_gim)
+    
     y = torch.nn.functional.one_hot(y.long(), num_classes=10).squeeze(1).float()
     loss = torch.nn.functional.cross_entropy(logits, y)
+    model.activations['y_labels'] = y 
+    model.activations['cross_entropy'] = loss 
     loss.backward()
     optimizer.step()
 

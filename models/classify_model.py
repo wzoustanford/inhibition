@@ -1,7 +1,38 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-        
+
+class GlobalInhibitionModelV1(nn.Module):
+    def __init__(self, acts): 
+        super(GlobalInhibitionModelV1, self).__init__()
+        num_hidden_sub_module = 32 
+        self.sub_modules = {} 
+        for name, act_tens in acts.items():
+            input_dim = act_tens.shape[1] if len(act_tens>1) else 1 
+            self.sub_modules[name] = nn.Sequential(
+                nn.Linear(input_dim, num_hidden_sub_module),
+                nn.Tanh(),
+            )
+        self.combine_layer = nn.Linear(len(self.sub_modules) * num_hidden_sub_module, 128), 
+        self.activations_list = [
+            'moe_model.router.h_glu_act',
+            'moe_model.router.h_act',
+            'moe_model',
+            'sm_linear',
+            'y_labels',
+            'cross_entropy',
+        ]
+    
+    def forward(self, acts): 
+        h_output = {}
+        for name, act_tens in acts.items():
+            h_output[name] = torch.cat((h_output, self.sub_modules[name]), dim=1)
+        assert len(acts.items == len(self.activations_list))
+        h_output_concat = torch.Tensor()
+        for name in self.activations_list: 
+            h_output_concat = torch.cat((h_output_concat, h_output[name]), dim = 1)
+        return self.combine_layer(h_output_concat)
+
 class ClassifyModelMNIST(nn.Module):
     def __init__(self, h_only: bool = False, use_convnet = True):
         super(ClassifyModelMNIST, self).__init__()
