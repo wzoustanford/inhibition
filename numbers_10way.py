@@ -133,10 +133,10 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.00005)
 optimizer_gim = torch.optim.Adam(gim_model.parameters(), lr=0.00005)
 
 batch_size = 128
-test_batch_size = 1280
+test_batch_size = 5120
 iter_start_training_gim = 1
 
-num_steps = int(20 * len(Dtr) / batch_size)
+num_steps = int(25 * len(Dtr) / batch_size)
 
 for i in range(num_steps): 
     model.train()
@@ -158,8 +158,8 @@ for i in range(num_steps):
     loss_train_batch.backward()
     optimizer.step()
     optimizer_gim.step()
-
-    if i != 0 and i % 100 == 0:
+    
+    if (i + 1) % 1000 == 0:
         print(f"step: {i}, loss: {loss_train_batch.item()}")
         model.eval()
         bt = torch.randperm(len(Dte))[:test_batch_size]
