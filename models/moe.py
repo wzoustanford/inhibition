@@ -35,9 +35,9 @@ class TwoLayerRouterWithGLU(nn.Module):
         self.h_layer_1 = nn.Linear(input_dim, hidden_dim) 
         if glu_on: 
             self.h_layer_1_glu = nn.Linear(input_dim, hidden_dim) 
-            self.h_glu_act = F.sigmoid 
+            self.h_glu_act = nn.Sigmoid() #F.sigmoid 
 
-        self.h_act = F.tanh #F.relu                
+        self.h_act = nn.Tanh() #F.tanh #F.relu 
         self.h_layer_2 = nn.Linear(hidden_dim, num_experts) 
 
         if expert_choice: 

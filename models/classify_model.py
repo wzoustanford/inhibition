@@ -1,6 +1,85 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+        
+class ClassifyModelMNIST(nn.Module):
+    def __init__(self, h_only: bool = False, use_convnet = True):
+        super(ClassifyModelMNIST, self).__init__()
+        
+        if use_convnet: 
+            self.convnet = nn.Sequential(
+                torch.nn.Conv2d(1, 64, kernel_size=[3, 3]),
+                torch.nn.ReLU(),
+                torch.nn.MaxPool2d(kernel_size=3, stride=1),
+                torch.nn.Conv2d(64, 32, kernel_size=[4, 4]),
+                torch.nn.ReLU(),
+                torch.nn.MaxPool2d(kernel_size=3, stride=2),
+                torch.nn.Flatten(1),
+                torch.nn.Linear(32 * 10 * 10, 128),
+                torch.nn.Tanh(),
+                torch.nn.Linear(128, 10),
+                torch.nn.Softmax(dim=1),
+            )
+            self.convnet_h = nn.Sequential(
+                torch.nn.Conv2d(1, 64, kernel_size=[3, 3]),
+                torch.nn.ReLU(),
+                torch.nn.MaxPool2d(kernel_size=3, stride=1),
+                torch.nn.Conv2d(64, 32, kernel_size=[4, 4]),
+                torch.nn.ReLU(),
+                torch.nn.MaxPool2d(kernel_size=3, stride=2),
+                torch.nn.Flatten(1),
+            )
+            """
+            self.conv1 = nn.Conv2d(1, 64, kernel_size=[3, 3])
+            self.maxpool_layer1 = nn.MaxPool2d(kernel_size=3, stride=1)
+            self.conv2 = nn.Conv2d(64, 32, kernel_size=[4, 4])
+            self.maxpool_layer2 = nn.MaxPool2d(kernel_size=3, stride=2)
+            self.linear1 = nn.Linear(32 * 10 * 10, 128)
+            #elf.glu_linear1 = nn.Linear(32 * 9 * 9, 128)
+            self.linear2 = nn.Linear(128, 10)
+            """
+        else: 
+            # dnn arch 
+            self.linear1 = nn.Linear(784, 512)
+            self.linear2 = nn.Linear(512, 128)
+            self.linear3 = nn.Linear(128, 10)
+            self.glu_linear2 = nn.Linear(512, 128)
+            self.glu_linear3 = nn.Linear(128, 10)
+
+        self.use_glu = False
+        self.use_convnet = use_convnet
+        self.h_only=h_only
+        self.h_output_dim = 128
+
+    def forward(self, x):
+        if self.use_convnet: 
+            return self.forward_convnet(x)
+        else: 
+            x = torch.flatten(x, start_dim=1)
+            x = self.linear1(x)
+            x = nn.ReLU()(x)
+            
+            if self.h_only and self.use_glu: 
+                y = self.linear2(x)
+                mask = self.glu_linear2(x)
+                x = torch.mul(y, torch.sigmoid(mask))
+            else: 
+                x = self.linear2(x)
+
+            x = nn.Tanh()(x)
+            if self.h_only: 
+                x = nn.Dropout(0.00)(x)
+                return x
+            x = self.linear3(x)
+            x = nn.Softmax(dim=1)(x)
+        return x
+
+    def forward_convnet(self, x):
+        if self.h_only: 
+            x = self.convnet_h(x)
+        else: 
+            x = self.convnet(x)
+        return x 
 
 class ConvNet(nn.Module):
     
@@ -85,83 +164,4 @@ class ClassifyModelCATSDOGS(nn.Module):
         x = nn.Tanh()(x)
         x = self.linear2(x)
         x = nn.Softmax(dim=1)(x)
-        return x 
-
-class ClassifyModelMNIST(nn.Module):
-    def __init__(self, h_only: bool = False, use_convnet = True):
-        super(ClassifyModelMNIST, self).__init__()
-        
-        if use_convnet: 
-            self.convnet = nn.Sequential(
-                torch.nn.Conv2d(1, 64, kernel_size=[3, 3]),
-                torch.nn.ReLU(),
-                torch.nn.MaxPool2d(kernel_size=3, stride=1),
-                torch.nn.Conv2d(64, 32, kernel_size=[4, 4]),
-                torch.nn.ReLU(),
-                torch.nn.MaxPool2d(kernel_size=3, stride=2),
-                torch.nn.Flatten(1),
-                torch.nn.Linear(32 * 10 * 10, 128),
-                torch.nn.Tanh(),
-                torch.nn.Linear(128, 10),
-                torch.nn.Softmax(dim=1),
-            )
-            self.convnet_h = nn.Sequential(
-                torch.nn.Conv2d(1, 64, kernel_size=[3, 3]),
-                torch.nn.ReLU(),
-                torch.nn.MaxPool2d(kernel_size=3, stride=1),
-                torch.nn.Conv2d(64, 32, kernel_size=[4, 4]),
-                torch.nn.ReLU(),
-                torch.nn.MaxPool2d(kernel_size=3, stride=2),
-                torch.nn.Flatten(1),
-            )
-            """
-            self.conv1 = nn.Conv2d(1, 64, kernel_size=[3, 3])
-            self.maxpool_layer1 = nn.MaxPool2d(kernel_size=3, stride=1)
-            self.conv2 = nn.Conv2d(64, 32, kernel_size=[4, 4])
-            self.maxpool_layer2 = nn.MaxPool2d(kernel_size=3, stride=2)
-            self.linear1 = nn.Linear(32 * 10 * 10, 128)
-            #elf.glu_linear1 = nn.Linear(32 * 9 * 9, 128)
-            self.linear2 = nn.Linear(128, 10)
-            """
-        else: 
-            # dnn arch 
-            self.linear1 = nn.Linear(784, 512)
-            self.linear2 = nn.Linear(512, 128)
-            self.linear3 = nn.Linear(128, 10)
-            self.glu_linear2 = nn.Linear(512, 128)
-            self.glu_linear3 = nn.Linear(128, 10)
-
-        self.use_glu = False
-        self.use_convnet = use_convnet
-        self.h_only=h_only
-        self.h_output_dim = 128
-
-    def forward(self, x):
-        if self.use_convnet: 
-            return self.forward_convnet(x)
-        else: 
-            x = torch.flatten(x, start_dim=1)
-            x = self.linear1(x)
-            x = nn.ReLU()(x)
-            
-            if self.h_only and self.use_glu: 
-                y = self.linear2(x)
-                mask = self.glu_linear2(x)
-                x = torch.mul(y, torch.sigmoid(mask))
-            else: 
-                x = self.linear2(x)
-
-            x = nn.Tanh()(x)
-            if self.h_only: 
-                x = nn.Dropout(0.00)(x)
-                return x
-            x = self.linear3(x)
-            x = nn.Softmax(dim=1)(x)
-        return x
-
-    def forward_convnet(self, x):
-        if self.h_only: 
-            x = self.convnet_h(x)
-        else: 
-            x = self.convnet(x)
         return x 
