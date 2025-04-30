@@ -4,7 +4,7 @@ Code is adapted from the PyTorch examples at
 https://github.com/pytorch/examples/blob/main/word_language_model
 
 """
-
+import pdb
 import math
 import os
 from pathlib import Path
@@ -19,7 +19,6 @@ from torch.nn.modules import MultiheadAttention
 from torch.utils.data import DataLoader, Dataset
 
 from lightning.pytorch import LightningModule
-from moe_transformer import MOETransformerDecoderLayer
 
 _REQUESTS_AVAILABLE = RequirementCache("requests")
 
@@ -72,14 +71,6 @@ class Transformer(nn.Module):
         super().__init__()
         self.pos_encoder = PositionalEncoding(ninp, dropout)
         self.embedding = nn.Embedding(vocab_size, ninp)
-        custom_decoder_layer = MOETransformerDecoderLayer(
-            d_model=ninp, 
-            nhead=nhead,
-            dim_feedforward=nhid,
-            dropout=dropout,
-            batch_first=True,
-        )
-        custom_decoder = nn.TransformerDecoder(decoder_layer=custom_decoder_layer, num_layers=nlayers)
         self.transformer = nn.Transformer(
             d_model=ninp,
             nhead=nhead,
@@ -87,7 +78,6 @@ class Transformer(nn.Module):
             num_decoder_layers=nlayers,
             dim_feedforward=nhid,
             dropout=dropout,
-            custom_decoder=custom_decoder,
             batch_first=True,
         )
         self.decoder = nn.Linear(ninp, vocab_size)
@@ -97,13 +87,14 @@ class Transformer(nn.Module):
         self.src_mask = None
 
     def forward(self, inputs: Tensor, target: Tensor, mask: Optional[Tensor] = None) -> Tensor:
-        _, t = inputs.shape
+        _, t = target.shape
 
         # we assume target is already shifted w.r.t. inputs
         if mask is None:
             mask = torch.tril(torch.ones(t, t, device=inputs.device)) == 1
             mask = mask.float().masked_fill(mask == 0, float("-inf")).masked_fill(mask == 1, 0.0)
-
+        print(inputs.shape)
+#        pdb.set_trace()
         src = self.pos_encoder(self.embedding(inputs) * math.sqrt(self.ninp))
         target = self.pos_encoder(self.embedding(target) * math.sqrt(self.ninp))
         output = self.transformer(src, target, tgt_mask=mask)
@@ -150,7 +141,7 @@ class PositionalEncoding(nn.Module):
             # TODO: Could make this a `nn.Parameter` with `requires_grad=False`
             self.pe = self._init_pos_encoding(device=x.device)
 
-        x = x + self.pe[:, x.size(1)]
+        x = x + self.pe[:, :x.size(1)]
         return self.dropout(x)
 
     def _init_pos_encoding(self, device: torch.device) -> Tensor:
@@ -182,9 +173,9 @@ class WMTDataset(Dataset):
         __getitem__(index: int) -> tuple[Tensor, Tensor]:
             Returns a tuple containing the input and target tensors for the given index.
     """
-    def __init__(self, file_path: Path, block_size: int = 35) -> None:
+    def __init__(self, file_path: Path, vocab, dictionary, block_size: int = 10) -> None:
         # Assume the file is a plain text file containing English text
-        self.data, self.dictionary = tokenize(file_path)
+        self.data, self.dictionary = tokenize(file_path, vocab, dictionary)
         self.block_size = block_size
 
     @property
@@ -199,9 +190,8 @@ class WMTDataset(Dataset):
         end = start + self.block_size
         inputs = self.data[start:end]
         target = self.data[start+1:end+1]
+#        pdb.set_trace()
         return inputs, target
-
-
 
 class Dictionary:
     """
@@ -220,7 +210,7 @@ class Dictionary:
     def __len__(self) -> int:
         return len(self.idx2word)
 
-class Dictionary_Count:
+class Vocabulary:
     """
     A dictionary class for mapping words to count their occurrences.
     """
@@ -232,9 +222,11 @@ class Dictionary_Count:
             self.word2count[word] = 1
         else:
             self.word2count[word] += 1
+    def most_common(self, n):
+        return dict(sorted(self.word2count.items(), key=lambda x: x[1], reverse=True)[:n])
 
 
-def tokenize(path: Path):
+def tokenize(path: Path, vocab, dictionary):
     """
     Tokenizes the text file at the given path and returns a tuple containing the tokenized tensor and the dictionary.
 
@@ -249,45 +241,80 @@ def tokenize(path: Path):
     Raises:
         AssertionError: If the file at the given path does not exist.
     """
-    dictionary = Dictionary()
-    dictionary_count = Dictionary_Count()
+    # dictionary = Dictionary()
 
-    assert os.path.exists(path)
-    # Add words to the dictionary
-    with open(path, encoding="utf8") as f:
-        for line in f:
-            words = ["<S>"] + line.split(" ") + ["</S>"]
-            for word in words:
-                dictionary.add_word(word)
-                dictionary_count.add_word(word)
+    # assert os.path.exists(path)
+    # # Add words to the dictionary
+    # with open(path, encoding="utf8") as f:
+    #     for line in f:
+    #         words = ["<S>"] + line.split(" ") + ["</S>"]
+    #         for word in words:
+    #             dictionary.add_word(word)
 
-    # Save dictionary_count top 40000 to a file
-    with open("dictionary_count.txt", "w") as f:
-        # Sort the dictionary by count
-        dictionary_count.word2count = dict(sorted(dictionary_count.word2count.items(), key=lambda item: item[1], reverse=True))
+    # # Save dictionary_count top 40000 to a file
+    # with open("dictionary_count.txt", "w") as f:
+    #     # Sort the dictionary by count
+    #     vocab_count.word2count = dict(sorted(vocab_count.word2count.items(), key=lambda item: item[1], reverse=True))
 
-        for i in range(30000):
-            f.write(f"{list(dictionary_count.word2count.keys())[i]}: {list(dictionary_count.word2count.values())[i]}\n")
+    #     for i in range(30000):
+    #         f.write(f"{list(vocab_count.word2count.keys())[i]}: {list(vocab_count.word2count.values())[i]}\n")
 
     # Tokenize file content
+    
     with open(path, encoding="utf8") as f:
         idss: list[Tensor] = []
         for line in f:
             words = ["<S>"] + line.split(" ") + ["</S>"]
-            # Replace words not in the dictionary with <UNK>
-            words = [word if word in dictionary.word2idx else "<UNK>" for word in words]
+            # Replace words not in the vocab_count with <UNK>
+            words = [word if word in vocab else "<UNK>" for word in words]
             ids: list[int] = []
             for word in words:
                 ids.append(dictionary.word2idx[word]) # Get the index of the word
             idss.append(torch.tensor(ids).type(torch.int64)) # Convert the list of indices to a tensor
-
+#    pdb.set_trace()
     return torch.cat(idss), dictionary
 
 
 class LightningTransformer(LightningModule):
-    def __init__(self, vocab_size: int) -> None:
+    def __init__(self, vocab_size: int, ninp: int, nhead: int, nhid: int, nlayers: int) -> None:
         super().__init__()
-        self.model = Transformer(vocab_size=vocab_size)
+        self.vocab = Vocabulary()
+        self.dictionary = Dictionary()
+        self.build_vocab(Path("/home/ubuntu/inhibition/data/test_train_data.txt"))
+        self.keep_dict()
+        self.validation_step_outputs = []
+        self.model = Transformer(vocab_size=vocab_size, ninp=ninp, nhead=nhead, nhid=nhid, nlayers=nlayers)
+
+
+    def build_vocab(self, path: Path) -> None:
+        with open(path, encoding="utf8") as f:
+            for line in f:
+                words = ["<S>"] + line.split(" ") + ["</S>"]
+                for word in words:
+                    self.vocab.add_word(word)
+                    self.dictionary.add_word(word)
+
+    def keep_dict(self) -> None:
+        # top_words is the dict of your 50k most frequent words
+        top_words_set = set(self.vocab.most_common(10000).keys())
+
+        # Create fresh containers
+        new_word2idx = {}
+        new_idx2word = []
+
+        for word in self.dictionary.idx2word:
+            if word in top_words_set:
+                new_word2idx[word] = len(new_idx2word)
+                new_idx2word.append(word)
+
+        # Make sure <UNK> is included and has a valid index
+        if "<UNK>" not in new_word2idx:
+            new_word2idx["<UNK>"] = len(new_idx2word)
+            new_idx2word.append("<UNK>")
+
+        # Overwrite the old dictionary with newly indexed data
+        self.dictionary.word2idx = new_word2idx
+        self.dictionary.idx2word = new_idx2word
 
     def forward(self, inputs: Tensor, target: Tensor) -> Tensor:
         return self.model(inputs, target)
@@ -305,11 +332,12 @@ class LightningTransformer(LightningModule):
         output = self(inputs, target)
         loss = F.nll_loss(output, target.view(-1))
         # Log the raw validation loss
+        self.validation_step_outputs.append(loss)
         self.log("val_loss", loss, prog_bar=True)
         return loss
 
-    def on_validation_epoch_end(self, outputs: list[Tensor]) -> None:
-        avg_loss = torch.stack(outputs).mean()
+    def on_validation_epoch_end(self) -> None:
+        avg_loss = torch.stack(self.validation_step_outputs).mean()
         # Perplexity is the exponentiation of the average loss
         perplexity = torch.exp(avg_loss)
         self.log("val_perplexity", perplexity, prog_bar=True)
@@ -318,9 +346,75 @@ class LightningTransformer(LightningModule):
         return torch.optim.SGD(self.model.parameters(), lr=0.1)
 
     def train_dataloader(self) -> DataLoader:
-        train_dataset = WMTDataset(Path("./data/news.2024.en.train.txt"))
-        return DataLoader(train_dataset, batch_size=32, shuffle=True)
+        train_dataset = WMTDataset(Path("/home/ubuntu/inhibition/data/test_train_data.txt"), self.vocab.most_common(10000), self.dictionary)
+        print("train_data", train_dataset.vocab_size)
+ #       pdb.set_trace()
+        return DataLoader(train_dataset, batch_size=1024, shuffle=True, num_workers=3)
 
     def val_dataloader(self) -> DataLoader:
-        val_dataset = WMTDataset(Path("./data/news.2024.en.valid.txt"))
-        return DataLoader(val_dataset, batch_size=32)
+        val_dataset = WMTDataset(Path("/home/ubuntu/inhibition/data/test_val_data.txt"), self.vocab.most_common(10000), self.dictionary)
+        print("val_data", val_dataset.vocab_size)
+        return DataLoader(val_dataset, batch_size=1024, num_workers=3)
+
+    def sample_next_token(self, logits, temperature=1.0, top_k=None, top_p=0.9, generated_indices=None, repetition_penalty=10000000000000.0):
+        # Adjust logits by temperature
+        logits = logits / temperature
+        # Apply repetition penalty
+        if repetition_penalty > 1.0 and generated_indices is not None:
+            last_token = generated_indices[-1]
+            logits[last_token] /= repetition_penalty
+        # Apply softmax to get probabilities
+        probabilities = torch.softmax(logits, dim=-1)
+        print(probabilities)
+        print("Sum of probabilities:", probabilities.sum())
+        # Apply top-k sampling if specified
+        if top_k is not None:
+            values, indices = torch.topk(probabilities, top_k)
+            # Create a mask to zero out probabilities not in the top_k
+            mask = torch.zeros_like(probabilities)
+            mask.scatter_(dim=-1, index=indices, src=values)
+            probabilities = mask / mask.sum()
+        
+        # Apply top-p sampling if specified
+        if top_p is not None:
+            sorted_probs, sorted_indices = torch.sort(probabilities, descending=True)
+            print("Sort Probabilities", sorted_probs)
+            cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+            # Create a mask for tokens that make up the top-p cumulative probability
+            sorted_probs[cumulative_probs > top_p] = 0
+            probabilities = torch.zeros_like(probabilities)
+            probabilities.scatter_(dim=-1, index=sorted_indices, src=sorted_probs)
+            probabilities = probabilities / probabilities.sum()
+            print(probabilities)
+            print(probabilities.sum())
+        # Sample from the resulting distribution
+        next_token_idx = torch.multinomial(probabilities, num_samples=1).item()
+        return next_token_idx
+
+    
+    def generate(self, prompt: str, max_tokens: int = 50, temperature: float = 1.0):
+        self.eval()
+        words = ["<S>"] + prompt.split()
+        # if work in vocab, get the index, else use index of <UNK>
+        indices = [self.dictionary.word2idx.get(word, self.dictionary.word2idx["<UNK>"]) for word in words]
+        inputs = torch.tensor(indices).unsqueeze(0).to(self.device)  # [1, seq_len]
+
+        # Decoder input alwasy starts with <S> token
+        generated_indices = inputs.tolist()[0] # start from <S> token
+
+        for _ in range(max_tokens):
+            generated_indices_tensor = torch.tensor(generated_indices).unsqueeze(0).to(self.device)            
+            outputs = self.model(inputs, generated_indices_tensor)
+            # Get the last token's logits
+            next_token_idx = self.sample_next_token(logits=outputs[-1], temperature=temperature, generated_indices=generated_indices)
+
+            generated_indices.append(next_token_idx)
+
+            # Stop generation if end token is produced
+            if self.dictionary.idx2word[next_token_idx] == "</S>":
+                break
+
+        generated_words = [self.dictionary.idx2word[idx] for idx in generated_indices]
+
+        # Skip the initial <S> token when joining
+        return ' '.join(generated_words[1:])
