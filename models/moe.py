@@ -1,7 +1,8 @@
 import torch, math, pdb
 import torch.nn as nn 
 import torch.nn.functional as F
-        
+from typing import Optional
+
 class SimpleRouterWithGLU(nn.Module): 
     def __init__(
             self, 
@@ -28,10 +29,13 @@ class TwoLayerRouterWithGLU(nn.Module):
             num_experts: int, 
             glu_on: bool,
             expert_choice: bool = False, 
+            additional_input_dim: int = 0, 
         ): 
         super(TwoLayerRouterWithGLU, self).__init__() 
         self.glu_on = glu_on 
-
+        if additional_input_dim <= 0: 
+            additional_input_dim = 0
+        #self.h_layer_1 = nn.Linear(input_dim + additional_input_dim, hidden_dim) 
         self.h_layer_1 = nn.Linear(input_dim, hidden_dim) 
         if glu_on: 
             self.h_layer_1_glu = nn.Linear(input_dim, hidden_dim) 
@@ -46,8 +50,13 @@ class TwoLayerRouterWithGLU(nn.Module):
         else:
             self.router_act = nn.Softmax(dim=1) 
 
+
     def forward(self, input: torch.Tensor, gim_input = None): 
         h_1 = self.h_layer_1(input)
+        
+        if additional_input is not None: 
+            assert(additional_input.shape[1] == self.additional_input_dim)
+            input = torch.cat((input, additional_input), dim=1)
 
         if self.glu_on: 
             if gim_input is None: 
@@ -58,8 +67,13 @@ class TwoLayerRouterWithGLU(nn.Module):
             h_1 = torch.mul(h_1, glu_mask) 
 
         h_1 = self.h_act(h_1) 
-        #h_1 = self.h_layer_norm(h_1) 
-        return self.router_act(self.h_layer_2(h_1)) 
+        
+        h_2 = self.h_layer_2(h_1)
+        #if self.glu_on: 
+        #    glu_mask = self.h_glu_act(self.h_layer_2_glu(h_1))
+        #    h_2 = torch.mul(h_2, glu_mask)
+        
+        return self.router_act(h_2) 
 
 class MoEWrapper(nn.Module): 
     ## Expert Choice/Selection 
@@ -73,6 +87,7 @@ class MoEWrapper(nn.Module):
             device: torch.device,
             expert_choice: bool = False, 
             output_type: str = 'sum',
+            additional_input_dim: int = 0, 
         ):
         super(MoEWrapper, self).__init__() 
         self.input_dim = input_dim
@@ -82,9 +97,17 @@ class MoEWrapper(nn.Module):
         self.glu_on = glu_on 
         self.num_experts = len(expert_list) 
         router_hidden_dim = 128 
-        self.router = TwoLayerRouterWithGLU(input_dim, router_hidden_dim, self.num_experts, glu_on=glu_on, expert_choice=expert_choice).to(device) 
+        self.router = TwoLayerRouterWithGLU(
+            input_dim, 
+            router_hidden_dim, 
+            self.num_experts, 
+            glu_on=glu_on, 
+            expert_choice=expert_choice, 
+            additional_input_dim=additional_input_dim
+        ).to(device) 
         
         self.input_layer_norm = torch.nn.LayerNorm(normalized_shape=input_dim, elementwise_affine=False)
+        self.additional_input_layer_norm = torch.nn.LayerNorm(normalized_shape=self.router.additional_input_dim, elementwise_affine=False)
         self.output_layer_norm = torch.nn.LayerNorm(normalized_shape=output_dim, elementwise_affine=False)
         if expert_choice: 
             self.renorm_sm = nn.Softmax(dim=0) 
@@ -94,11 +117,11 @@ class MoEWrapper(nn.Module):
         self.expert_choice = expert_choice
         self.output_type = output_type
 
+
     def forward(self, input: torch.Tensor, gim_input=None):
         if len(self.expert_list) == 1: 
             return self.expert_list[0](input) 
-
-        input = self.input_layer_norm(input)
+        
         #input = self.input_layer_norm(input)
         
         l = self.router(input) if gim_input is None else self.router(input, gim_input)
@@ -178,8 +201,8 @@ class MoEWrapperExpertSelection(nn.Module):
         #self.rand_l = torch.rand((64, self.num_experts))
 
     def forward(self, input: torch.Tensor):
-        if len(self.expert_list) == 1: 
-            return self.expert_list[0](input) 
+        if len(self.expert_list) == 1:
+            return self.expert_list[0](input)
 
         #input = self.input_layer_norm(input)
         l = self.router(input)
@@ -189,7 +212,7 @@ class MoEWrapperExpertSelection(nn.Module):
         #print('ws')
         #print(ws)
         #nws = ws
-        nws = self.renorm_sm(ws) 
+        nws = self.renorm_sm(ws)
         #nws = ws * 84.0 
         #print('nws')
         #print(nws)

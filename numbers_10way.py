@@ -75,6 +75,7 @@ class ClassifyModelMOE(torch.nn.Module):
             device = device, 
             expert_choice = False, 
             output_type = moe_output_type, 
+            additional_input_dim = 64 * 24 * 24,
         )
         if moe_output_type != 'sum': 
             self.sm_linear = torch.nn.Linear(128 * NUM_EXPERTS, 10, device=device)
@@ -126,7 +127,11 @@ model = torch.nn.Sequential(
     torch.nn.Linear(128, 10),
     torch.nn.Softmax(dim=1),
 ).to(device)
+x = Dtr[:0, :, :, :].to(device)
+y = model(x)
+pdb.set_trace() 
 """
+
 model.zero_grad()
 gim_model.zero_grad()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.00005)
