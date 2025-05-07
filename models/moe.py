@@ -38,12 +38,11 @@ class TwoLayerRouterWithGLU(nn.Module):
         #self.h_layer_1 = nn.Linear(input_dim + additional_input_dim, hidden_dim) 
         self.h_layer_1 = nn.Linear(input_dim, hidden_dim) 
         if glu_on: 
-            self.h_layer_1_glu = nn.Linear(input_dim + additional_input_dim, hidden_dim) 
-            self.h_glu_act = F.sigmoid 
-            self.h_layer_2_glu = nn.Linear(hidden_dim, num_experts)
-        
-        self.additional_input_dim = additional_input_dim 
-        self.h_act = F.tanh #F.relu 
+            self.h_layer_1_glu = nn.Linear(input_dim, hidden_dim) 
+            self.h_layer_1_glu_gim = nn.Linear(128, hidden_dim)
+            self.h_glu_act = nn.Sigmoid() #F.sigmoid 
+
+        self.h_act = nn.Tanh() #F.tanh #F.relu 
         self.h_layer_2 = nn.Linear(hidden_dim, num_experts) 
 
         if expert_choice: 
@@ -51,7 +50,8 @@ class TwoLayerRouterWithGLU(nn.Module):
         else:
             self.router_act = nn.Softmax(dim=1) 
 
-    def forward(self, input: torch.Tensor, additional_input=None): 
+
+    def forward(self, input: torch.Tensor, gim_input = None): 
         h_1 = self.h_layer_1(input)
         
         if additional_input is not None: 
@@ -59,7 +59,11 @@ class TwoLayerRouterWithGLU(nn.Module):
             input = torch.cat((input, additional_input), dim=1)
 
         if self.glu_on: 
-            glu_mask = self.h_glu_act(self.h_layer_1_glu(input)) 
+            if gim_input is None: 
+                glu_lin_summed = self.h_layer_1_glu(input)
+            else: 
+                glu_lin_summed = self.h_layer_1_glu(input) + self.h_layer_1_glu_gim(gim_input)
+            glu_mask = self.h_glu_act(glu_lin_summed) 
             h_1 = torch.mul(h_1, glu_mask) 
 
         h_1 = self.h_act(h_1) 
@@ -113,16 +117,14 @@ class MoEWrapper(nn.Module):
         self.expert_choice = expert_choice
         self.output_type = output_type
 
-    def forward(self, input: torch.Tensor, additional_input: Optional[torch.Tensor]=None):
-        input = self.input_layer_norm(input)
-        if additional_input is not None: 
-            additional_input = self.additional_input_layer_norm(additional_input)
-        
+
+    def forward(self, input: torch.Tensor, gim_input=None):
         if len(self.expert_list) == 1: 
             return self.expert_list[0](input) 
         
         #input = self.input_layer_norm(input)
-        l = self.router(input, additional_input)
+        
+        l = self.router(input) if gim_input is None else self.router(input, gim_input)
         
         if self.expert_choice: 
             batch_K = math.ceil(self.K * 1.0 / self.num_experts * input.size()[0])
