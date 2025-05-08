@@ -62,7 +62,7 @@ class TwoLayerRouterWithGLU(nn.Module):
         return self.router_act(self.h_layer_2(h_1)) 
 
 class MoEWrapper(nn.Module): 
-    ## Expert Choice/Selection 
+    ## data Choice/Selection 
     def __init__(
             self, 
             input_dim: int,
