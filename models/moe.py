@@ -10,7 +10,7 @@ class SimpleRouterWithGLU(nn.Module):
             expert_choice: bool = False, 
         ): 
         super(SimpleRouterWithGLU, self).__init__() 
-                
+        
         self.h_layer = nn.Linear(input_dim, num_experts) 
         if expert_choice: 
             self.router_act = nn.Softmax(dim=0) 
@@ -35,7 +35,8 @@ class TwoLayerRouterWithGLU(nn.Module):
         self.h_layer_1 = nn.Linear(input_dim, hidden_dim) 
         if glu_on: 
             self.h_layer_1_glu = nn.Linear(input_dim, hidden_dim) 
-            self.h_layer_1_glu_gim = nn.Linear(128, hidden_dim)
+            self.h_layer_1_glu_pretext = nn.Linear(64 * 24 * 24, hidden_dim) 
+            self.h_layer_1_glu_gim = nn.Linear(128, hidden_dim) 
             self.h_glu_act = nn.Sigmoid() #F.sigmoid 
 
         self.h_act = nn.Tanh() #F.tanh #F.relu 
@@ -46,14 +47,16 @@ class TwoLayerRouterWithGLU(nn.Module):
         else:
             self.router_act = nn.Softmax(dim=1) 
 
-    def forward(self, input: torch.Tensor, gim_input = None): 
+    def forward(self, input: torch.Tensor, gim_input = None, pretext_input = None): 
         h_1 = self.h_layer_1(input)
 
         if self.glu_on: 
-            if gim_input is None: 
-                glu_lin_summed = self.h_layer_1_glu(input)
-            else: 
-                glu_lin_summed = self.h_layer_1_glu(input) + self.h_layer_1_glu_gim(gim_input)
+            glu_lin_summed = self.h_layer_1_glu(input) 
+            if gim_input is not None: 
+                glu_lin_summed += self.h_layer_1_glu_gim(gim_input)
+            if pretext_input is not None:
+                glu_lin_summed += self.h_layer_1_glu_pretext(pretext_input)
+            
             glu_mask = self.h_glu_act(glu_lin_summed) 
             h_1 = torch.mul(h_1, glu_mask) 
 
@@ -94,14 +97,13 @@ class MoEWrapper(nn.Module):
         self.expert_choice = expert_choice
         self.output_type = output_type
 
-    def forward(self, input: torch.Tensor, gim_input=None):
+    def forward(self, input: torch.Tensor, gim_input=None, pretext_input=None):
         if len(self.expert_list) == 1: 
             return self.expert_list[0](input) 
 
         input = self.input_layer_norm(input)
-        #input = self.input_layer_norm(input)
         
-        l = self.router(input) if gim_input is None else self.router(input, gim_input)
+        l = self.router(input, gim_input = gim_input, pretext_input = pretext_input) 
         
         if self.expert_choice: 
             batch_K = math.ceil(self.K * 1.0 / self.num_experts * input.size()[0])
@@ -146,7 +148,7 @@ class MoEWrapper(nn.Module):
                         temp_sum_output[filter] += selected_output 
 
         if self.output_type != 'sum':
-            if self.output_type == 'concat_sum': 
+            if self.output_type == 'concat_sum':
                 #temp_sum_output = self.temp_output_layer_norm(temp_sum_output)
                 for i in range(self.num_experts): 
                     output_list[i] += temp_sum_output

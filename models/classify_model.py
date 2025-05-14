@@ -49,7 +49,7 @@ class ClassifyModelMNIST(nn.Module):
         super(ClassifyModelMNIST, self).__init__()
         
         if use_convnet: 
-            self.convnet = nn.Sequential(
+            self.convnet = nn.Sequential( ## not used for now 
                 torch.nn.Conv2d(1, 64, kernel_size=[3, 3]),
                 torch.nn.ReLU(),
                 torch.nn.MaxPool2d(kernel_size=3, stride=1),
@@ -62,10 +62,12 @@ class ClassifyModelMNIST(nn.Module):
                 torch.nn.Linear(128, 10),
                 torch.nn.Softmax(dim=1),
             )
-            self.convnet_h = nn.Sequential(
+            self.convnet_h1 = nn.Sequential(
                 torch.nn.Conv2d(1, 64, kernel_size=[3, 3]),
                 torch.nn.ReLU(),
                 torch.nn.MaxPool2d(kernel_size=3, stride=1),
+            )
+            self.convnet_h2 = nn.Sequential(
                 torch.nn.Conv2d(64, 32, kernel_size=[4, 4]),
                 torch.nn.ReLU(),
                 torch.nn.MaxPool2d(kernel_size=3, stride=2),
@@ -118,7 +120,9 @@ class ClassifyModelMNIST(nn.Module):
 
     def forward_convnet(self, x):
         if self.h_only: 
-            x = self.convnet_h(x)
+            x = self.convnet_h1(x)
+            self.pretext_input = nn.Flatten(1)(x)
+            x = self.convnet_h2(x)
         else: 
             x = self.convnet(x)
         return x 
