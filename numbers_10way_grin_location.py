@@ -103,6 +103,7 @@ def train_numbers_gim(num_epochs):
         
         def forward(self, x, y):
             self.activations = {}
+            self.moe_model.router.grin_states = None 
             loss, logits = self.forward_once(x, y)
             for rec in range(self.num_recurrences): 
                 inh_input = self.inh_head(self.activations)
