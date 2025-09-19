@@ -31,6 +31,7 @@ class TwoLayerRouterWithGLU(nn.Module):
         ): 
         super(TwoLayerRouterWithGLU, self).__init__() 
         self.glu_on = glu_on 
+        self.num_experts = num_experts
 
         self.h_layer_1 = nn.Linear(input_dim, hidden_dim) 
         if glu_on: 
@@ -46,7 +47,8 @@ class TwoLayerRouterWithGLU(nn.Module):
             self.router_act = nn.Softmax(dim=0) 
         else:
             self.router_act = nn.Softmax(dim=1) 
-
+        self.grin_states = None 
+    
     def forward(self, input: torch.Tensor, gim_input = None, pretext_input = None): 
         h_1 = self.h_layer_1(input)
 
@@ -62,7 +64,10 @@ class TwoLayerRouterWithGLU(nn.Module):
 
         h_1 = self.h_act(h_1) 
         #h_1 = self.h_layer_norm(h_1) 
-        return self.router_act(self.h_layer_2(h_1)) 
+        weights = self.router_act(self.h_layer_2(h_1)) 
+        if self.grin_states is not None: 
+            weights = weights * F.sigmoid(self.grin_states[:, 128:128 + self.num_experts]) 
+        return weights 
 
 class MoEWrapper(nn.Module): 
     ## Expert Choice/Selection 
@@ -106,10 +111,10 @@ class MoEWrapper(nn.Module):
         l = self.router(input, gim_input = gim_input, pretext_input = pretext_input) 
         
         if self.expert_choice: 
-            batch_K = math.ceil(self.K * 1.0 / self.num_experts * input.size()[0])
-            ws, ib = torch.topk(l, batch_K, dim=0)
+            batch_K = math.ceil(self.K * 1.0 / self.num_experts * input.size()[0]) 
+            ws, ib = torch.topk(l, batch_K, dim=0) 
         else:
-            ws, ib = torch.topk(l, self.K, dim=1)
+            ws, ib = torch.topk(l, self.K, dim=1) 
         
         nws = self.renorm_sm(ws) 
 
@@ -154,6 +159,8 @@ class MoEWrapper(nn.Module):
                     output_list[i] += temp_sum_output
             output = torch.concat(output_list, dim=1)
         
+        if self.output_type == 'sum' and self.router.grin_states is not None:
+            output = output * F.sigmoid(self.router.grin_states[:, 128 + self.num_experts:])
         #output = self.output_layer_norm(output)
         return output
 
