@@ -57,7 +57,7 @@ def train_numbers_gim(num_epochs):
 
             moe_output_type = 'sum'
             self.conv_base_model = ClassifyModelMNIST(h_only=True, use_convnet=True).to(device)
-
+            
             self.moe_model = MoEWrapper(
                 input_dim = 32 * 10 * 10,
                 output_dim = 128,
@@ -84,17 +84,23 @@ def train_numbers_gim(num_epochs):
                 self.sm_linear = torch.nn.Linear(128, 10, device=device)
             self.activations = {}
             self.get_activation_list = [
+                "conv_base_model.convnet_h2",
                 "moe_model.router.h_glu_act",
                 "moe_model.router.h_act",
                 "moe_model",
+                #"moe_model.expert_list.0.1",
+                #"moe_model.expert_list.1.1",
+                #"moe_model.expert_list.2.1",
+                #"moe_model.expert_list.3.1",
+                #"moe_model.expert_list.4.1",
                 "sm_linear",
             ]
             for name, modu in self.named_modules():
+                print(name)
                 if name in self.get_activation_list:
                     modu.register_forward_hook(self.get_activation(name))
             self.inh_head = None 
-            self.num_recurrences = 3
-
+            self.num_recurrences = 1
         
         def get_activation(self, name):
             def hook(module, input, output):

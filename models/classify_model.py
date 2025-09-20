@@ -8,27 +8,37 @@ class GlobalInhibitionModelV2(nn.Module):
         num_hidden_sub_module = 32 
         self.num_experts = 5
         self.activations_list = [
-            'moe_model.router.h_glu_act',
-            'moe_model.router.h_act',
-            'moe_model',
-            'sm_linear',
+            "conv_base_model.convnet_h2",
+            "moe_model.router.h_glu_act",
+            "moe_model.router.h_act",
+            "moe_model",
+            #"moe_model.expert_list.0.1",
+            #"moe_model.expert_list.1.1",
+            #"moe_model.expert_list.2.1",
+            #"moe_model.expert_list.3.1",
+            #"moe_model.expert_list.4.1",
+            "sm_linear",
+            #'moe_model.router.h_glu_act',
+            #'moe_model.router.h_act',
+            #'moe_model',
+            #'sm_linear',
             #'y_labels',
             #'cross_entropy',
         ]
         self.sub_modules_dict = {}; module_index = 0
         self.sub_modules = nn.ModuleList()
-        for list_name in self.activations_list: 
-            for name, act_tens in acts.items(): 
-                if name == list_name:
-                    input_dim = act_tens.shape[1] if len(act_tens>1) else 1 
-                    self.sub_modules.append(
-                        nn.Sequential(
-                            nn.Linear(input_dim, num_hidden_sub_module),
-                            nn.Tanh(),
-                        )
-                    )
-                    self.sub_modules_dict[name] = module_index
-                    module_index +=1 
+        #for list_name in self.activations_list: 
+        for name, act_tens in acts.items(): 
+            assert(name in self.activations_list)
+            input_dim = act_tens.shape[1] if len(act_tens>1) else 1 
+            self.sub_modules.append(
+                nn.Sequential(
+                    nn.Linear(input_dim, num_hidden_sub_module),
+                    nn.Tanh(),
+                )
+            )
+            self.sub_modules_dict[name] = module_index
+            module_index +=1 
         #assert len(self.sub_modules == len(acts.items))
         self.combine_layer = nn.Linear(len(self.sub_modules) * num_hidden_sub_module, 128 + 128 + self.num_experts) 
         self.device = device 
