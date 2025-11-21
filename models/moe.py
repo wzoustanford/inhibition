@@ -56,7 +56,7 @@ class TwoLayerRouterWithGLU(nn.Module):
             glu_lin_summed = self.h_layer_1_glu(input) 
             if gim_input is not None: 
                 glu_lin_summed += self.h_layer_1_glu_gim(gim_input)
-            if pretext_input is not None:
+            if pretext_input is not None: 
                 glu_lin_summed += self.h_layer_1_glu_pretext(pretext_input)
             
             glu_mask = self.h_glu_act(glu_lin_summed) 

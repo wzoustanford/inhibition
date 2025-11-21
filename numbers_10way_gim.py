@@ -110,8 +110,8 @@ def train_numbers_gim(num_epochs):
 
     xt = Dtr[:10, :, :, :].to(device)
     yt = model(xt)
-    model.activations['y_labels'] = torch.zeros((10, 10)).to(device)
-    model.activations['cross_entropy'] = torch.Tensor().to(device)
+    #model.activations['y_labels'] = torch.zeros((10, 10)).to(device)
+    #model.activations['cross_entropy'] = torch.Tensor().to(device)
     gim_model = GlobalInhibitionModelV1(model.activations, device).to(device)
 
     """
@@ -157,8 +157,8 @@ def train_numbers_gim(num_epochs):
         
         y_train_batch = torch.nn.functional.one_hot(y_train_batch.long(), num_classes=10).squeeze(1).float()
         loss_train_batch = torch.nn.functional.cross_entropy(logits, y_train_batch)
-        model.activations['y_labels'] = y_train_batch.detach()
-        model.activations['cross_entropy'] = loss_train_batch.tile((batch_size, 1)).detach()
+        #model.activations['y_labels'] = y_train_batch.detach()
+        #model.activations['cross_entropy'] = loss_train_batch.tile((batch_size, 1)).detach()
         loss_train_batch.backward()
         optimizer.step()
         optimizer_gim.step()
@@ -180,8 +180,8 @@ def train_numbers_gim(num_epochs):
                 logits_tr_sim = model(x_tr_sim)
                 y_tr_sim = torch.nn.functional.one_hot(y_tr_sim.long(), num_classes=10).squeeze(1).float()
                 loss_tr_sim = torch.nn.functional.cross_entropy(logits_tr_sim, y_tr_sim)
-                model.activations['y_labels'] = y_tr_sim.detach()
-                model.activations['cross_entropy'] = loss_tr_sim.tile((test_batch_size, 1)).detach()
+                #model.activations['y_labels'] = y_tr_sim.detach()
+                #model.activations['cross_entropy'] = loss_tr_sim.tile((test_batch_size, 1)).detach()
                 h_gim_test = gim_model(model.activations)
                 logits = model(x, h_gim_test)
             
@@ -191,8 +191,8 @@ def train_numbers_gim(num_epochs):
 
             model.train()
             _ = model(x_train_batch) #fill the activations again with the previous training batch to continue training
-            model.activations['y_labels'] = y_train_batch.detach()
-            model.activations['cross_entropy'] = loss_train_batch.tile((batch_size, 1)).detach()
+            #model.activations['y_labels'] = y_train_batch.detach()
+            #model.activations['cross_entropy'] = loss_train_batch.tile((batch_size, 1)).detach()
     return acc.item()
 
 if __name__ == "__main__":

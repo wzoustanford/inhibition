@@ -111,7 +111,7 @@ def train_numbers_moe_only(glu_on):
 
     model.zero_grad()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.00005)
-
+    
     batch_size = 128
     test_batch_size = 5120
 

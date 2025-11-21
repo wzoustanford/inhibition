@@ -100,21 +100,26 @@ def train_numbers_gim(num_epochs):
                 if name in self.get_activation_list:
                     modu.register_forward_hook(self.get_activation(name))
             self.inh_head = None 
-            self.num_recurrences = 1
+            self.num_recurrences = 3
         
         def get_activation(self, name):
             def hook(module, input, output):
-                self.activations[name] = output.detach().to(device)
+                self.activations[name] = output.to(device)
             return hook
         
         def forward(self, x, y):
             self.activations = {}
             self.moe_model.router.grin_states = None 
+            loss_list, logits_list = [], []
             loss, logits = self.forward_once(x, y)
+            loss_list.append(loss)
+            logits_list.append(logits)
             for rec in range(self.num_recurrences): 
                 inh_input = self.inh_head(self.activations)
                 loss, logits = self.forward_once(x, y, inh_input)
-            return loss, logits
+                loss_list.append(loss)
+                logits_list.append(logits)
+            return loss, logits, loss_list, logits_list
 
         def forward_once(self, x, y, grin_states = None): 
             x = self.conv_base_model(x) 
@@ -183,16 +188,23 @@ def train_numbers_gim(num_epochs):
         optimizer.zero_grad()
         #optimizer_head.zero_grad()
         
-        loss_train_batch, _ = model(x_train_batch, y_train_batch)
+        loss_train_batch, _, loss_list_train_batch, _ = model(x_train_batch, y_train_batch)
         
-        loss_train_batch.backward()
+        for s, l_train_batch in enumerate(loss_list_train_batch):
+            if s < len(loss_list_train_batch) - 1: 
+                l_train_batch.backward(retain_graph=True)
+            else:
+                l_train_batch.backward()
         optimizer.step()
         del x_train_batch
         del y_train_batch
-        #optimizer_gim.step()
+        loss_train_batch = loss_train_batch.detach()
+        for loss in loss_list_train_batch:
+            loss = loss.detach()
+            #optimizer_gim.step()
         
 
-        if (i + 1) % 1000 == 0:
+        if (i + 1) % 200 == 0:
             print(f"step: {i}, loss: {loss_train_batch.item()}")
             model.eval()
             bt = torch.randperm(len(Dte))[:test_batch_size]
@@ -200,7 +212,7 @@ def train_numbers_gim(num_epochs):
             y = Lte[bt]
             x = x.to(device)
             y = y.to(device)
-            _, logits = model(x, y)
+            _, logits, _, _ = model(x, y)
             
             preds = torch.argmax(logits, dim=1)
             acc = (preds == y).float().mean()
@@ -209,7 +221,7 @@ def train_numbers_gim(num_epochs):
 
 if __name__ == "__main__":
     acc_list_all = []
-    num_epochs_list = [45]
+    num_epochs_list = [60]
     for num_epochs in num_epochs_list:
         acc_list = []
         for i in range(5): 
