@@ -1,1 +1,5 @@
-# inhibition
+# Global recurrent gated (inhibition) networks (GRIN) for reinforcement learning 
+
+Gating has proven critical to improve mixture of experts, LLM training, and recommendation models. Despite its potential theoretical interpretation or neuro-science connections, the application of gating is primarily an engineering approach to improve the model performance. To this end, different technical constraints exist, such as the in-ability to process signals from later (downstream) part of the feed-forward network in order to gate the current neuron. Also in dynamical systems such as RL tasks and especially multi-task reinforcement learning, the temporal correlations are not captured. In comparison, biological inhibitive neurons exhibit amazing characteristics such as global and diverse connections to many part of the cortex. We implement the gating 'globally' which means 'all-to-local', so that the gating model (in some cases, router) is connected with all neurons in the network. We also implement the gating 'temporally' which propagates the signal in an LSTM or small global recurrent net. This shows statistically significant improvements on multi-task RL on Metaworkd with MT10 and MT50 tasks. 
+
+https://ai.stanford.edu/~wzou/GRGMoEMTRL.pdf 
